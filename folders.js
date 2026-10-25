@@ -23,7 +23,9 @@ export async function listRoots() {
 
 // 새 폴더 연결: label(예: 개인·시중교재 참고), category(시중교재/내신대비/교과서/2022개정/기타), path(안내용 원래 경로)
 export async function addRoot({ label, category, path }) {
-  const handle = await window.showDirectoryPicker({ mode: 'read', id: 'odap-' + (label || 'root').slice(0, 20) });
+  // 크롬의 폴더창 id는 영문·숫자·_·- 만 허용(32자 이내) → 이름을 숫자 해시로 바꿔 씀
+  let h = 0; for (const ch of (label || 'root')) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  const handle = await window.showDirectoryPicker({ mode: 'read', id: 'odap-' + h.toString(36) });
   const id = 'r' + Date.now();
   const rec = { id, label: label || handle.name, category: category || '기타', path: path || handle.name, handle, addedAt: Date.now(), lastScan: null, fileCount: 0 };
   await tx('readwrite', (s) => s.put(rec));
