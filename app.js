@@ -1,0 +1,425 @@
+// 수학도서관 오답노트 — 1단계: 교재 라이브러리 · 학생 등록 · MYBOX 연결
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
+import {
+  getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut,
+} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+import {
+  getFirestore, doc, getDoc, setDoc, addDoc, updateDoc, deleteDoc, collection, query, orderBy,
+  onSnapshot, serverTimestamp, where,
+} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+import { FIREBASE_CONFIG, API_BASE } from './config.js';
+import { writeBatch, getDocs, limit, increment } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+import { createLibrary } from './library.js';
+import { printDoc } from './print/print.js';
+
+// ---------- 공통 ----------
+const $ = (s) => document.querySelector(s);
+const main = $('#main');
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const mb = (n) => (n ? `${(n / 1048576).toFixed(1)}MB` : '');
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2800);
+}
+const modal = $('#modal');
+function openModal(html) { $('#modalBody').innerHTML = html; if (!modal.open) modal.showModal(); }
+function closeModal() { if (modal.open) modal.close(); }
+
+if (FIREBASE_CONFIG.apiKey === 'REPLACE_ME') {
+  main.innerHTML = `<div class="card"><h2>설정이 필요합니다</h2><p>config.js 파일에 Firebase 설정값과 API 주소를 넣어 주세요. 방법은 SETUP.md 2·4단계에 있습니다.</p></div>`;
+  throw new Error('config.js not set');
+}
+
+const app = initializeApp(FIREBASE_CONFIG);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+const S = { user: null, aid: null, academy: null, role: null, view: 'books', sets: [], books: [], students: [], unsub: [], uploads: {} };
+const col = (name) => collection(db, 'academies', S.aid, name);
+const ref = (name, id) => doc(db, 'academies', S.aid, name, id);
+
+// ---------- API (Cloudflare Worker) ----------
+async function api(path, opts = {}) {
+  const token = await auth.currentUser.getIdToken();
+  const res = await fetch(API_BASE + path, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${token}` } });
+  const isJson = (res.headers.get('content-type') || '').includes('json');
+  const body = isJson ? await res.json() : null;
+  if (!res.ok) throw new Error(body?.error || `요청 실패 (${res.status})`);
+  return body;
+}
+function uploadFile(key, file, onProgress) {
+  return auth.currentUser.getIdToken().then((token) => new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', `${API_BASE}/files/${encodeURIComponent(key)}`);
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.setRequestHeader('Content-Type', 'application/pdf');
+    xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    xhr.onload = () => {
+      let b = {}; try { b = JSON.parse(xhr.responseText); } catch { /* ignore */ }
+      xhr.status < 300 ? resolve(b) : reject(new Error(b.error || `업로드 실패 (${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error('네트워크 오류로 업로드하지 못했습니다.'));
+    xhr.send(file);
+  }));
+}
+
+// ---------- 로그인 · 학원 연결 ----------
+onAuthStateChanged(auth, async (user) => {
+  S.unsub.forEach((u) => u()); S.unsub = [];
+  S.user = user;
+  $('#logoutBtn').hidden = !user;
+  $('#tabs').hidden = true;
+  if (!user) return renderLogin();
+  const me = await getDoc(doc(db, 'users', user.uid));
+  if (!me.exists() || !me.data().academyId) return renderCreateAcademy();
+  S.aid = me.data().academyId;
+  const [ac, mem] = await Promise.all([getDoc(doc(db, 'academies', S.aid)), getDoc(doc(db, 'academies', S.aid, 'members', user.uid))]);
+  if (!mem.exists()) { main.innerHTML = '<div class="card">이 학원의 구성원으로 등록되지 않은 계정입니다. 원장님께 문의하세요.</div>'; return; }
+  S.academy = ac.data(); S.role = mem.data().role;
+  $('#academyName').textContent = S.academy.name;
+  $('#tabs').hidden = false;
+  listen();
+  render();
+  lib().runner.start(); // 새벽 분석: 정해 둔 시간에 프로그램이 열려 있으면 자동 실행
+});
+
+function renderLogin() {
+  $('#academyName').textContent = '';
+  main.innerHTML = `<div class="card center pad"><h2>로그인</h2><p class="muted">원장님 구글 계정으로 로그인하세요.</p><button class="primary" id="loginBtn">구글로 로그인</button></div>`;
+  $('#loginBtn').onclick = async () => {
+    const p = new GoogleAuthProvider();
+    try { await signInWithPopup(auth, p); } catch (e) {
+      if (String(e.code).includes('popup')) await signInWithRedirect(auth, p); else toast(e.message);
+    }
+  };
+}
+
+function renderCreateAcademy() {
+  main.innerHTML = `<div class="card"><h2>처음 설정</h2><p class="muted small">학원 정보를 한 번만 만들면 됩니다. 나중에 선생님 계정을 이 학원에 추가할 수 있습니다.</p>
+    <label class="f">학원 이름</label><input type="text" id="acName" value="수학도서관">
+    <div class="row" style="margin-top:12px"><button class="primary" id="acCreate">학원 만들기</button></div></div>`;
+  $('#acCreate').onclick = async () => {
+    const name = $('#acName').value.trim() || '수학도서관';
+    const u = S.user;
+    const acRef = doc(collection(db, 'academies'));
+    await setDoc(acRef, { name, ownerUid: u.uid, createdAt: serverTimestamp() });
+    await setDoc(doc(db, 'academies', acRef.id, 'members', u.uid), { role: 'owner', name: u.displayName || '', email: u.email || '', joinedAt: serverTimestamp() });
+    await setDoc(doc(db, 'users', u.uid), { academyId: acRef.id });
+    location.reload();
+  };
+}
+
+$('#logoutBtn').onclick = () => signOut(auth);
+$('#tabs').onclick = (e) => {
+  const b = e.target.closest('button[data-view]'); if (!b) return;
+  S.view = b.dataset.view;
+  document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('on', x === b));
+  render();
+};
+
+function listen() {
+  const sub = (name, key, field) => S.unsub.push(onSnapshot(query(col(name), orderBy(field)), (snap) => {
+    S[key] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    if (!modal.open) render();
+  }, (err) => toast(`불러오기 오류: ${err.message}`)));
+  sub('bookSets', 'sets', 'createdAt');
+  sub('books', 'books', 'order');
+  // 선생님 계정은 본인 담당 학생만 불러옵니다 (보안 규칙과 맞춤)
+  const sq = S.role === 'owner'
+    ? query(col('students'), orderBy('name'))
+    : query(col('students'), where('teacherUid', '==', S.user.uid), orderBy('name'));
+  S.unsub.push(onSnapshot(sq, (snap) => {
+    S.students = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    if (!modal.open) render();
+  }, (err) => toast(`불러오기 오류: ${err.message}`)));
+}
+
+let LIB = null;
+function lib() {
+  LIB ||= createLibrary({
+    main: () => main, toast, db, aid: () => S.aid, api, openModal, closeModal,
+    fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, query, where, orderBy, limit, updateDoc, increment },
+  });
+  return LIB;
+}
+function render() {
+  if (S.view === 'books') renderBooks();
+  else if (S.view === 'catalog') lib().show();
+  else if (S.view === 'students') renderStudents();
+  else renderSettings();
+}
+
+// ---------- 교재 라이브러리 ----------
+function renderBooks() {
+  const loose = S.books.filter((b) => !S.sets.some((s) => s.id === b.setId));
+  main.innerHTML = `
+    <div class="row between"><h2>교재 라이브러리</h2><button class="primary" data-a="newSet">+ 교재 세트</button></div>
+    ${S.sets.length ? '' : '<div class="empty">먼저 교재 세트를 만드세요.<br><span class="small">예) 중2-2 중간고사 대비</span></div>'}
+    ${S.sets.map(setCard).join('')}
+    ${loose.length ? `<div class="card"><h3>세트 없는 교재</h3>${loose.map(bookBlock).join('')}</div>` : ''}`;
+}
+function setCard(s) {
+  const books = S.books.filter((b) => b.setId === s.id);
+  return `<div class="card">
+    <div class="row between"><div><h3>${esc(s.name)}</h3><span class="muted small">${esc(s.grade || '')} · 교재 ${books.length}권</span></div>
+      <div class="row"><button class="ghost small" data-a="newBook" data-id="${s.id}">+ 교재</button><button class="ghost small" data-a="editSet" data-id="${s.id}">수정</button></div></div>
+    ${books.map(bookBlock).join('') || '<p class="muted small">이 세트에 교재를 추가하세요. 단계별 교재를 순서대로 넣으면 됩니다.</p>'}
+  </div>`;
+}
+function bookBlock(b) {
+  const ready = b.mainFile && b.answerFile;
+  return `<div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
+    <div class="row between"><div class="row"><span class="badge gold">${esc(b.order ?? '')}단계</span><strong>${esc(b.title)}</strong>
+      <span class="badge ${ready ? '' : 'red'}">${ready ? '파일 등록 완료' : '파일 필요'}</span></div>
+      <div class="row"><button class="ghost small" data-a="editBook" data-id="${b.id}">수정</button></div></div>
+    <div class="slots">${slot(b, 'mainFile', '교재 PDF')}${slot(b, 'answerFile', '정답·해설 PDF')}</div>
+  </div>`;
+}
+function slot(b, field, label) {
+  const f = b[field]; const up = S.uploads[`${b.id}:${field}`];
+  if (up != null) return `<div class="slot"><div class="small">${label} 올리는 중… ${Math.round(up * 100)}%</div><div class="progress"><div style="width:${up * 100}%"></div></div></div>`;
+  if (f) return `<div class="slot done"><div class="row between"><span class="small"><strong>${label}</strong> ${f.source === 'mybox' ? '· MYBOX' : ''}</span>
+      <span class="row"><button class="ghost small" data-a="openFile" data-key="${esc(f.key)}">보기</button><button class="ghost small" data-a="pick" data-id="${b.id}" data-f="${field}">바꾸기</button></span></div>
+      <div class="name muted">${esc(f.name)} ${mb(f.size)}</div></div>`;
+  return `<div class="slot"><div class="small"><strong>${label}</strong></div><div class="row" style="margin-top:6px">
+    <button class="ghost small" data-a="upload" data-id="${b.id}" data-f="${field}">파일 올리기</button>
+    <button class="ghost small" data-a="mybox" data-id="${b.id}" data-f="${field}">MYBOX에서</button></div></div>`;
+}
+
+function setForm(s = {}) {
+  openModal(`<h2>${s.id ? '교재 세트 수정' : '새 교재 세트'}</h2>
+    <label class="f">세트 이름</label><input type="text" id="fName" value="${esc(s.name || '')}" placeholder="중2-2 중간고사 대비">
+    <label class="f">학년</label><input type="text" id="fGrade" value="${esc(s.grade || '중2')}">
+    <div class="row between" style="margin-top:16px">${s.id ? '<button class="ghost danger" id="fDel">세트 삭제</button>' : '<span></span>'}
+      <div class="row"><button class="ghost" data-a="close">취소</button><button class="primary" id="fSave">저장</button></div></div>`);
+  $('#fSave').onclick = async () => {
+    const data = { name: $('#fName').value.trim(), grade: $('#fGrade').value.trim() };
+    if (!data.name) return toast('세트 이름을 입력하세요.');
+    if (s.id) await updateDoc(ref('bookSets', s.id), data);
+    else await addDoc(col('bookSets'), { ...data, createdAt: serverTimestamp(), createdBy: S.user.uid });
+    closeModal(); render();
+  };
+  if (s.id) $('#fDel').onclick = async () => {
+    if (S.books.some((b) => b.setId === s.id)) return toast('세트 안의 교재를 먼저 지우거나 옮기세요.');
+    if (!confirm('이 세트를 삭제할까요?')) return;
+    await deleteDoc(ref('bookSets', s.id)); closeModal(); render();
+  };
+}
+
+function bookForm(b = {}, setId) {
+  const sid = b.setId || setId;
+  const nextOrder = S.books.filter((x) => x.setId === sid).length + 1;
+  openModal(`<h2>${b.id ? '교재 수정' : '교재 추가'}</h2>
+    <label class="f">교재 이름</label><input type="text" id="fTitle" value="${esc(b.title || '')}" placeholder="예) 내신대비 기본편">
+    <label class="f">단계 (순서)</label><input type="number" id="fOrder" min="1" value="${esc(b.order ?? nextOrder)}">
+    <label class="f">교재 세트</label><select id="fSet">${S.sets.map((s) => `<option value="${s.id}" ${s.id === sid ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
+    <div class="row between" style="margin-top:16px">${b.id ? '<button class="ghost danger" id="fDel">교재 삭제</button>' : '<span></span>'}
+      <div class="row"><button class="ghost" data-a="close">취소</button><button class="primary" id="fSave">저장</button></div></div>`);
+  $('#fSave').onclick = async () => {
+    const data = { title: $('#fTitle').value.trim(), order: Number($('#fOrder').value) || 1, setId: $('#fSet').value };
+    if (!data.title) return toast('교재 이름을 입력하세요.');
+    if (b.id) await updateDoc(ref('books', b.id), data);
+    else await addDoc(col('books'), { ...data, status: 'registered', createdAt: serverTimestamp(), createdBy: S.user.uid });
+    closeModal(); render();
+  };
+  if (b.id) $('#fDel').onclick = async () => {
+    if (!confirm('교재와 올린 파일을 삭제할까요? 학생 기록이 생긴 뒤에는 삭제하지 마세요.')) return;
+    for (const f of [b.mainFile, b.answerFile]) if (f) await api(`/files/${encodeURIComponent(f.key)}`, { method: 'DELETE' }).catch(() => {});
+    await deleteDoc(ref('books', b.id)); closeModal(); render();
+  };
+}
+
+const fileKey = (bookId, field) => `academies/${S.aid}/books/${bookId}/${field === 'mainFile' ? 'book' : 'answer'}.pdf`;
+
+function pickLocal(bookId, field) {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'application/pdf,.pdf';
+  inp.onchange = async () => {
+    const file = inp.files[0]; if (!file) return;
+    if (!/\.pdf$/i.test(file.name)) return toast('PDF 파일만 올릴 수 있습니다.');
+    if (file.size > 95 * 1048576) return toast('95MB 이하 파일만 바로 올릴 수 있습니다. 큰 파일은 MYBOX에서 가져오세요.');
+    const k = `${bookId}:${field}`; const key = fileKey(bookId, field);
+    S.uploads[k] = 0; render();
+    try {
+      const r = await uploadFile(key, file, (p) => { S.uploads[k] = p; render(); });
+      delete S.uploads[k];
+      await updateDoc(ref('books', bookId), { [field]: { key, name: file.name, size: r.size ?? file.size, source: 'upload', at: Date.now() } });
+      toast('업로드 완료');
+    } catch (e) { delete S.uploads[k]; render(); toast(e.message); }
+  };
+  inp.click();
+}
+
+// ---------- MYBOX 파일 고르기 ----------
+async function myboxPicker(bookId, field) {
+  const trail = [{ id: null, name: 'MYBOX' }];
+  const show = async (items, note = '') => {
+    openModal(`<h2>MYBOX에서 가져오기</h2>
+      <div class="row"><input type="text" id="mbQ" placeholder="파일 이름으로 검색" style="flex:1"><button class="ghost" id="mbSearch">검색</button></div>
+      <div class="crumb">${trail.map((t, i) => `<button data-i="${i}">${esc(t.name)}</button>`).join(' › ')}</div>
+      ${note ? `<p class="muted small">${note}</p>` : ''}
+      <div class="list" id="mbList">${items.length ? items.map((it) => `<button data-id="${esc(it.id)}" data-type="${it.type}" data-name="${esc(it.name)}">
+        <span>${it.type === 'folder' ? '📁' : '📄'} ${esc(it.name)}</span><span class="muted small">${it.type === 'folder' ? '' : mb(it.size)}</span></button>`).join('')
+        : '<p class="muted small pad center">PDF나 폴더가 없습니다. 암호화 폴더와 공유받은 폴더는 보이지 않습니다.</p>'}</div>
+      <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="ghost" data-a="close">닫기</button></div>`);
+    $('#mbSearch').onclick = async () => {
+      const q = $('#mbQ').value.trim(); if (!q) return;
+      try { const r = await api(`/mybox/search?q=${encodeURIComponent(q)}`); show(filterPdf(r.items, true), `"${esc(q)}" 검색 결과`); } catch (e) { toast(e.message); }
+    };
+    document.querySelectorAll('.crumb button').forEach((b) => b.onclick = () => { trail.splice(Number(b.dataset.i) + 1); load(); });
+    $('#mbList').onclick = async (e) => {
+      const b = e.target.closest('button[data-id]'); if (!b) return;
+      if (b.dataset.type === 'folder') { trail.push({ id: b.dataset.id, name: b.dataset.name }); return load(); }
+      $('#mbList').innerHTML = `<p class="pad center">“${esc(b.dataset.name)}” 가져오는 중… (큰 파일은 1분 정도 걸립니다)</p>`;
+      try {
+        const key = fileKey(bookId, field);
+        const r = await api('/mybox/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileId: b.dataset.id, key }) });
+        await updateDoc(ref('books', bookId), { [field]: { key, name: r.name, size: r.size, source: 'mybox', myboxId: b.dataset.id, at: Date.now() } });
+        closeModal(); render(); toast('MYBOX에서 가져왔습니다');
+      } catch (err) { toast(err.message); load(); }
+    };
+  };
+  const filterPdf = (items, onlyFiles) => items.filter((i) => (!onlyFiles && i.type === 'folder') || /\.pdf$/i.test(i.name));
+  const load = async () => {
+    openModal('<p class="pad center">MYBOX 목록 불러오는 중…</p>');
+    try {
+      const cur = trail[trail.length - 1];
+      const r = await api(`/mybox/list${cur.id ? `?folderId=${encodeURIComponent(cur.id)}` : ''}`);
+      show(filterPdf(r.items, false), r.nextCursor ? '항목이 많아 앞쪽 200개만 보입니다. 검색을 이용하세요.' : '');
+    } catch (e) { openModal(`<h2>MYBOX 연결 오류</h2><p>${esc(e.message)}</p><p class="muted small">연결 설정 탭에서 상태를 확인하세요.</p><div class="row" style="justify-content:flex-end"><button class="ghost" data-a="close">닫기</button></div>`); }
+  };
+  load();
+}
+
+async function openFile(key) {
+  const w = window.open('', '_blank');
+  try {
+    const token = await auth.currentUser.getIdToken();
+    const res = await fetch(`${API_BASE}/files/${encodeURIComponent(key)}`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error('파일을 열 수 없습니다.');
+    const url = URL.createObjectURL(await res.blob());
+    if (w) w.location = url; else location.href = url;
+  } catch (e) { if (w) w.close(); toast(e.message); }
+}
+
+// ---------- 학생 ----------
+function renderStudents() {
+  const mine = S.role === 'owner' ? S.students : S.students.filter((s) => s.teacherUid === S.user.uid);
+  main.innerHTML = `<div class="row between"><h2>학생</h2><button class="primary" data-a="newStudent">+ 학생 등록</button></div>
+    ${mine.length ? '' : '<div class="empty">학생을 등록하고 사용할 교재 세트를 고르세요.</div>'}
+    ${mine.map((s) => {
+      const books = S.books.filter((b) => (s.bookIds || []).includes(b.id)).sort((a, b) => a.order - b.order);
+      return `<div class="card"><div class="row between"><div><h3>${esc(s.name)}</h3><span class="muted small">${esc(s.grade || '')} ${esc(s.school || '')}</span></div>
+        <button class="ghost small" data-a="editStudent" data-id="${s.id}">수정</button></div>
+        <div class="row" style="margin-top:8px">${books.map((b) => `<span class="badge">${esc(b.title)}</span>`).join('') || '<span class="muted small">배정된 교재 없음</span>'}</div>
+        <p class="muted small" style="margin:8px 0 0">오답 입력은 교재 문항 정리(다음 단계)가 끝나면 열립니다.</p></div>`;
+    }).join('')}`;
+}
+
+function studentForm(s = {}) {
+  const chosen = new Set(s.bookIds || []);
+  openModal(`<h2>${s.id ? '학생 수정' : '학생 등록'}</h2>
+    <label class="f">이름</label><input type="text" id="fName" value="${esc(s.name || '')}">
+    <div class="row"><div style="flex:1"><label class="f">학년</label><input type="text" id="fGrade" value="${esc(s.grade || '중2')}"></div>
+      <div style="flex:1"><label class="f">학교</label><input type="text" id="fSchool" value="${esc(s.school || '')}"></div></div>
+    <label class="f">사용 교재 (세트를 누르면 소속 교재가 모두 선택됩니다)</label>
+    <div class="checks">${S.sets.map((set) => {
+      const books = S.books.filter((b) => b.setId === set.id).sort((a, b) => a.order - b.order);
+      return `<div style="margin-bottom:6px"><button class="ghost small" data-set="${set.id}">${esc(set.name)} 전체</button>
+        ${books.map((b) => `<label><input type="checkbox" value="${b.id}" ${chosen.has(b.id) ? 'checked' : ''}> ${esc(b.order)}단계 · ${esc(b.title)}</label>`).join('')}</div>`;
+    }).join('') || '<p class="muted small">등록된 교재가 없습니다.</p>'}</div>
+    <div class="row between" style="margin-top:16px">${s.id ? '<button class="ghost danger" id="fDel">학생 삭제</button>' : '<span></span>'}
+      <div class="row"><button class="ghost" data-a="close">취소</button><button class="primary" id="fSave">저장</button></div></div>`);
+  document.querySelectorAll('[data-set]').forEach((btn) => btn.onclick = () => {
+    const ids = S.books.filter((b) => b.setId === btn.dataset.set).map((b) => b.id);
+    document.querySelectorAll('.checks input').forEach((c) => { if (ids.includes(c.value)) c.checked = true; });
+  });
+  $('#fSave').onclick = async () => {
+    const bookIds = [...document.querySelectorAll('.checks input:checked')].map((c) => c.value);
+    const data = { name: $('#fName').value.trim(), grade: $('#fGrade').value.trim(), school: $('#fSchool').value.trim(), bookIds };
+    if (!data.name) return toast('이름을 입력하세요.');
+    if (s.id) await updateDoc(ref('students', s.id), data);
+    else await addDoc(col('students'), { ...data, teacherUid: S.user.uid, createdAt: serverTimestamp() });
+    closeModal(); render();
+  };
+  if (s.id) $('#fDel').onclick = async () => { if (confirm(`${s.name} 학생을 삭제할까요?`)) { await deleteDoc(ref('students', s.id)); closeModal(); render(); } };
+}
+
+// ---------- 연결 설정 ----------
+async function renderSettings() {
+  main.innerHTML = `<h2>연결 설정</h2>
+    <div class="card"><div class="kv"><span class="muted">계정</span><span>${esc(S.user.email)}</span>
+      <span class="muted">내 UID</span><span><code>${esc(S.user.uid)}</code></span>
+      <span class="muted">학원 ID</span><span><code>${esc(S.aid)}</code></span>
+      <span class="muted">API 주소</span><span><code>${esc(API_BASE)}</code></span></div>
+      <p class="muted small">UID는 서버 허용 목록(ALLOWED_UIDS)에 넣는 값입니다. 선생님을 추가할 때도 그분의 UID를 여기서 확인해 넣습니다.</p></div>
+    <div class="card" id="health"><p class="muted">연결 상태 확인 중…</p></div>
+    <div class="card" id="nightly"><p class="muted">새벽 분석 설정 불러오는 중…</p></div>
+    <div class="card"><h3>출력 시험</h3><p class="muted small">재타이핑 시범(내신대비B 1.1 1회차 10문항 + 유사 1 + 정답·해설)으로 A4 출력과 인쇄를 시험합니다.</p>
+      <div class="row"><button class="ghost small" data-a="sample" data-aud="student">학생용 미리보기</button><button class="ghost small" data-a="sample" data-aud="teacher">선생님용(출처 표시)</button><select id="smpPer" style="width:auto"><option value="2">한 쪽 2문항</option><option value="4" selected>한 쪽 4문항</option><option value="6">한 쪽 6문항</option></select></div></div>`;
+  renderNightly();
+  const out = [];
+  try {
+    const h = await fetch(`${API_BASE}/health`).then((r) => r.json());
+    out.push(['API 서버', '정상']);
+    out.push(['교재 저장소(R2)', h.storage ? '정상' : '연결 안 됨']);
+    out.push(['MYBOX 토큰', h.mybox ? '등록됨' : '미등록']);
+    try { await api('/me'); out.push(['내 계정 허용', '허용됨']); } catch (e) { out.push(['내 계정 허용', e.message]); }
+    if (h.mybox) {
+      try { const r = await api('/mybox/list'); out.push(['MYBOX 연결', `정상 (최상위 항목 ${r.items.length}개)`]); } catch (e) { out.push(['MYBOX 연결', e.message]); }
+    }
+  } catch { out.push(['API 서버', '연결 안 됨 — config.js의 API 주소와 서버 배포를 확인하세요']); }
+  $('#health').innerHTML = `<h3>연결 상태</h3><div class="kv" style="margin-top:8px">${out.map(([k, v]) => `<span class="muted">${k}</span><span>${esc(v)}</span>`).join('')}</div>
+    <div class="row" style="margin-top:12px"><button class="ghost small" data-a="recheck">다시 확인</button></div>`;
+}
+
+async function renderNightly() {
+  const box = document.getElementById('nightly'); if (!box) return;
+  const s = (await getDoc(ref('settings', 'nightly'))).data() || { enabled: false, start: '02:00', end: '06:00', dailyBudgetUSD: 5 };
+  const today = new Date().toISOString().slice(0, 10);
+  const u = (await getDoc(ref('aiUsage', today))).data() || {};
+  const q = await getDocs(query(col('analysisQueue'), where('status', '==', 'queued'), limit(500)));
+  box.innerHTML = `<h3>새벽 자동 분석</h3><p class="muted small">정한 시간에 이 PC의 크롬에서 프로그램이 열려 있으면 대기 중인 교재를 이어서 분석합니다. PC 절전은 꺼 두세요.</p>
+    <div class="row"><label class="row small"><input type="checkbox" id="nOn" ${s.enabled ? 'checked' : ''}> 사용</label>
+      <input type="time" id="nStart" value="${s.start}" style="width:auto"> ~ <input type="time" id="nEnd" value="${s.end}" style="width:auto">
+      <span class="small">하루 AI 예산 $</span><input type="number" id="nBudget" min="0" step="1" value="${s.dailyBudgetUSD ?? 5}" style="width:80px">
+      <button class="primary small" id="nSave">저장</button></div>
+    <div class="kv" style="margin-top:10px"><span class="muted">대기 중</span><span>${q.size}건</span><span class="muted">오늘 AI 사용</span><span>$${(u.usd || 0).toFixed(2)} · ${u.calls || 0}회</span></div>`;
+  document.getElementById('nSave').onclick = async () => {
+    await setDoc(ref('settings', 'nightly'), { enabled: nOn.checked, start: nStart.value, end: nEnd.value, dailyBudgetUSD: Number(nBudget.value) || 0 }, { merge: true });
+    toast('새벽 분석 설정 저장');
+  };
+}
+
+async function printSample(aud) {
+  const doc = await (await fetch('./print/sample.json')).json();
+  doc.meta.audience = aud;
+  const per = Number(document.getElementById('smpPer')?.value || 4);
+  doc.sections.forEach((s) => { if (s.type === 'sheet') s.perPage = per; });
+  await printDoc(doc, { autoPrint: false });
+}
+
+// ---------- 클릭 처리 ----------
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-a]'); if (!b) return;
+  const { a, id, f, key } = b.dataset;
+  const book = () => S.books.find((x) => x.id === id);
+  ({
+    close: closeModal,
+    newSet: () => setForm(),
+    editSet: () => setForm(S.sets.find((x) => x.id === id)),
+    newBook: () => bookForm({}, id),
+    editBook: () => bookForm(book()),
+    upload: () => pickLocal(id, f),
+    mybox: () => myboxPicker(id, f),
+    pick: () => openModal(`<h2>파일 바꾸기</h2><p class="muted small">새 파일로 덮어씁니다.</p><div class="row"><button class="primary" data-a="upload" data-id="${id}" data-f="${f}">파일 올리기</button><button class="ghost" data-a="mybox" data-id="${id}" data-f="${f}">MYBOX에서</button><button class="ghost" data-a="close">취소</button></div>`),
+    openFile: () => openFile(key),
+    newStudent: () => studentForm(),
+    editStudent: () => studentForm(S.students.find((x) => x.id === id)),
+    recheck: renderSettings,
+    sample: () => printSample(b.dataset.aud).catch((er) => toast(er.message)),
+  }[a] || (() => {}))();
+  if (a === 'upload' && modal.open) closeModal();
+});
+modal.addEventListener('close', () => render());
