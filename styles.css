@@ -50,3 +50,13 @@ dialog::backdrop{background:rgba(10,30,28,.45)}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:14px}
 code{background:var(--bg);padding:1px 6px;border-radius:4px;font-size:13px;word-break:break-all}
 .empty{border:1px dashed var(--line);border-radius:var(--r);padding:28px 16px;text-align:center;color:var(--sub)}
+dialog:has(.wide){width:min(940px,96vw)}
+.wsec{border-top:1px solid var(--line);padding:8px 0}
+.nos{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.nob{min-width:44px;min-height:40px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer;font-weight:500}
+.nob.on{background:var(--red);border-color:var(--red);color:#fff}
+.causes label{display:inline-flex;gap:3px;align-items:center;margin-right:8px}
+.causes .row{border-top:1px dashed var(--line);padding:4px 0}
+textarea{font:inherit;padding:9px 11px;border:1px solid var(--line);border-radius:8px}
+.rec{display:flex;gap:8px;align-items:flex-start;border-top:1px solid var(--line);padding:6px 0;font-size:13px}
+.rec input{margin-top:4px}

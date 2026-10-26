@@ -1,4 +1,4 @@
-// 수학도서관 오답노트 — 1단계: 교재 라이브러리 · 학생 등록 · MYBOX 연결
+// 수학도서관 오답노트 — 교재 라이브러리 · 교재 정리 · 학생 오답 입력 · 1차 오답노트 · 연결 설정
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import {
   getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut,
@@ -8,9 +8,10 @@ import {
   onSnapshot, serverTimestamp, where,
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import { FIREBASE_CONFIG, API_BASE } from './config.js';
-import { writeBatch, getDocs, limit, increment } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+import { writeBatch, getDocs, limit, increment, arrayUnion } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import { createLibrary } from './library.js';
 import { printDoc } from './print/print.js';
+import { createWrong } from './wrong.js';
 
 // ---------- 공통 ----------
 const $ = (s) => document.querySelector(s);
@@ -47,6 +48,8 @@ async function api(path, opts = {}) {
   if (!res.ok) throw new Error(body?.error || `요청 실패 (${res.status})`);
   return body;
 }
+// AI 기능은 POST + JSON
+const ai = (path, body) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 function uploadFile(key, file, onProgress) {
   return auth.currentUser.getIdToken().then((token) => new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -138,10 +141,18 @@ function listen() {
 let LIB = null;
 function lib() {
   LIB ||= createLibrary({
-    main: () => main, toast, db, aid: () => S.aid, api, openModal, closeModal,
+    main: () => main, toast, db, aid: () => S.aid, api: ai, openModal, closeModal,
     fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, query, where, orderBy, limit, updateDoc, increment },
   });
   return LIB;
+}
+let WR = null;
+function wr() {
+  WR ||= createWrong({
+    db, aid: () => S.aid, ai, toast, openModal, closeModal, uid: () => S.user.uid,
+    fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, updateDoc, increment, arrayUnion },
+  });
+  return WR;
 }
 function render() {
   if (S.view === 'books') renderBooks();
@@ -304,46 +315,52 @@ async function openFile(key) {
 }
 
 // ---------- 학생 ----------
+let catalogReady = false;
 function renderStudents() {
   const mine = S.role === 'owner' ? S.students : S.students.filter((s) => s.teacherUid === S.user.uid);
+  if (!catalogReady) wr().catalog().then(() => { catalogReady = true; if (S.view === 'students' && !modal.open) render(); }).catch(() => {});
+  const used = (s) => new Set((s.sheets || []).flatMap((x) => x.records || []));
   main.innerHTML = `<div class="row between"><h2>학생</h2><button class="primary" data-a="newStudent">+ 학생 등록</button></div>
-    ${mine.length ? '' : '<div class="empty">학생을 등록하고 사용할 교재 세트를 고르세요.</div>'}
+    ${mine.length ? '' : '<div class="empty">학생을 등록한 뒤 <b>오답 입력</b>을 누르세요. 교재는 오답 입력 화면에서 찾아 고르면 자동으로 이 학생 교재로 들어갑니다.</div>'}
     ${mine.map((s) => {
-      const books = S.books.filter((b) => (s.bookIds || []).includes(b.id)).sort((a, b) => a.order - b.order);
-      return `<div class="card"><div class="row between"><div><h3>${esc(s.name)}</h3><span class="muted small">${esc(s.grade || '')} ${esc(s.school || '')}</span></div>
-        <button class="ghost small" data-a="editStudent" data-id="${s.id}">수정</button></div>
-        <div class="row" style="margin-top:8px">${books.map((b) => `<span class="badge">${esc(b.title)}</span>`).join('') || '<span class="muted small">배정된 교재 없음</span>'}</div>
-        <p class="muted small" style="margin:8px 0 0">오답 입력은 교재 문항 정리(다음 단계)가 끝나면 열립니다.</p></div>`;
+      const books = (s.catalogIds || []).map((id) => wr().bookOf(id)).filter(Boolean);
+      const recs = [...(s.records || [])].sort((a, b) => b.at - a.at);
+      const u = used(s);
+      const total = recs.reduce((a, r) => a + r.wrongs.length, 0);
+      return `<div class="card"><div class="row between"><div><h3>${esc(s.name)}</h3><span class="muted small">${esc(s.grade || '')} ${esc(s.school || '')} · 기록 ${recs.length}건 · 오답 ${total}개</span></div>
+        <div class="row"><button class="primary small" data-a="wrongIn" data-id="${s.id}">+ 오답 입력</button><button class="ghost small" data-a="editStudent" data-id="${s.id}">수정</button></div></div>
+        <div class="row" style="margin-top:8px">${books.map((b) => `<span class="badge">${esc(b.title)}</span>`).join('') || (catalogReady ? '<span class="muted small">아직 고른 교재 없음</span>' : '')}</div>
+        ${recs.length ? `<div style="margin-top:8px" data-recs="${s.id}">${recs.slice(0, 12).map((r) => `<label class="rec"><input type="checkbox" value="${r.id}" ${u.has(r.id) ? '' : 'checked'}>
+          <span style="flex:1"><b>${new Date(r.at).toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' })}</b> · ${esc(r.title)} · ${esc(r.type || '')} · <span style="color:var(--red)">오답 ${r.wrongs.length}</span>${r.wrongs.length ? ` <span class="muted">(${esc(r.wrongs.slice(0, 8).map((w) => (w.label ? w.label.replace(/\s*-\s*\d+\s*레벨/, '').replace(/^[^/]+\//, '') + ' ' : '') + w.no).join(', '))}${r.wrongs.length > 8 ? ' …' : ''})</span>` : ''}${u.has(r.id) ? ' <span class="badge">오답노트 만듦</span>' : ''}</span>
+          <button class="ghost small danger" data-a="delRec" data-id="${s.id}" data-key="${r.id}" title="기록 지우기">×</button></label>`).join('')}</div>
+          <div class="row" style="margin-top:8px;justify-content:flex-end"><span class="muted small">체크한 기록으로</span><button class="primary small" data-a="makeNote" data-id="${s.id}">1차 오답노트 만들기</button></div>` : ''}
+      </div>`;
     }).join('')}`;
 }
 
 function studentForm(s = {}) {
-  const chosen = new Set(s.bookIds || []);
+  const ids = [...(s.catalogIds || [])];
   openModal(`<h2>${s.id ? '학생 수정' : '학생 등록'}</h2>
     <label class="f">이름</label><input type="text" id="fName" value="${esc(s.name || '')}">
     <div class="row"><div style="flex:1"><label class="f">학년</label><input type="text" id="fGrade" value="${esc(s.grade || '중2')}"></div>
       <div style="flex:1"><label class="f">학교</label><input type="text" id="fSchool" value="${esc(s.school || '')}"></div></div>
-    <label class="f">사용 교재 (세트를 누르면 소속 교재가 모두 선택됩니다)</label>
-    <div class="checks">${S.sets.map((set) => {
-      const books = S.books.filter((b) => b.setId === set.id).sort((a, b) => a.order - b.order);
-      return `<div style="margin-bottom:6px"><button class="ghost small" data-set="${set.id}">${esc(set.name)} 전체</button>
-        ${books.map((b) => `<label><input type="checkbox" value="${b.id}" ${chosen.has(b.id) ? 'checked' : ''}> ${esc(b.order)}단계 · ${esc(b.title)}</label>`).join('')}</div>`;
-    }).join('') || '<p class="muted small">등록된 교재가 없습니다.</p>'}</div>
+    ${s.id ? `<label class="f">사용 교재 (오답 입력 화면에서 찾아 고르면 자동으로 추가됩니다)</label><div class="checks">${ids.map((id) => { const b = wr().bookOf(id); return b ? `<label><input type="checkbox" value="${id}" checked> ${esc(b.title)}</label>` : ''; }).join('') || '<p class="muted small">아직 없음</p>'}</div>` : ''}
     <div class="row between" style="margin-top:16px">${s.id ? '<button class="ghost danger" id="fDel">학생 삭제</button>' : '<span></span>'}
       <div class="row"><button class="ghost" data-a="close">취소</button><button class="primary" id="fSave">저장</button></div></div>`);
-  document.querySelectorAll('[data-set]').forEach((btn) => btn.onclick = () => {
-    const ids = S.books.filter((b) => b.setId === btn.dataset.set).map((b) => b.id);
-    document.querySelectorAll('.checks input').forEach((c) => { if (ids.includes(c.value)) c.checked = true; });
-  });
   $('#fSave').onclick = async () => {
-    const bookIds = [...document.querySelectorAll('.checks input:checked')].map((c) => c.value);
-    const data = { name: $('#fName').value.trim(), grade: $('#fGrade').value.trim(), school: $('#fSchool').value.trim(), bookIds };
+    const data = { name: $('#fName').value.trim(), grade: $('#fGrade').value.trim(), school: $('#fSchool').value.trim() };
     if (!data.name) return toast('이름을 입력하세요.');
-    if (s.id) await updateDoc(ref('students', s.id), data);
-    else await addDoc(col('students'), { ...data, teacherUid: S.user.uid, createdAt: serverTimestamp() });
+    if (s.id) { data.catalogIds = [...document.querySelectorAll('.checks input:checked')].map((c) => c.value); await updateDoc(ref('students', s.id), data); }
+    else await addDoc(col('students'), { ...data, catalogIds: [], records: [], sheets: [], teacherUid: S.user.uid, createdAt: serverTimestamp() });
     closeModal(); render();
   };
-  if (s.id) $('#fDel').onclick = async () => { if (confirm(`${s.name} 학생을 삭제할까요?`)) { await deleteDoc(ref('students', s.id)); closeModal(); render(); } };
+  if (s.id) $('#fDel').onclick = async () => { if (confirm(`${s.name} 학생을 삭제할까요? 오답 기록도 함께 지워집니다.`)) { await deleteDoc(ref('students', s.id)); closeModal(); render(); } };
+}
+
+async function delRecord(sid, rid) {
+  const s = S.students.find((x) => x.id === sid); if (!s) return;
+  if (!confirm('이 오답 기록을 지울까요?')) return;
+  await updateDoc(ref('students', sid), { records: (s.records || []).filter((r) => r.id !== rid) });
 }
 
 // ---------- 연결 설정 ----------
@@ -417,6 +434,13 @@ document.addEventListener('click', (e) => {
     openFile: () => openFile(key),
     newStudent: () => studentForm(),
     editStudent: () => studentForm(S.students.find((x) => x.id === id)),
+    wrongIn: () => wr().entry(S.students.find((x) => x.id === id)).catch((er) => toast(er.message)),
+    makeNote: () => {
+      const ids = [...document.querySelectorAll(`[data-recs="${id}"] input:checked`)].map((c) => c.value);
+      if (!ids.length) return toast('오답노트로 만들 기록을 체크하세요.');
+      wr().makeNote(S.students.find((x) => x.id === id), ids).catch((er) => toast(er.message));
+    },
+    delRec: () => { e.preventDefault(); delRecord(id, key); },
     recheck: renderSettings,
     sample: () => printSample(b.dataset.aud).catch((er) => toast(er.message)),
   }[a] || (() => {}))();

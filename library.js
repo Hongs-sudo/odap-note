@@ -1,6 +1,6 @@
 // "교재 정리" 화면: 폴더 연결 → 목록·중복·단원 수 → 인쇄/PDF, 새벽 분석 대기 목록
 import * as F from './folders.js';
-import { buildCatalog } from './catalog.js';
+import { buildCatalog, isExam } from './catalog.js';
 import { printDoc } from './print/print.js';
 import { createRunner, tocTask, retypeTask, inWindow } from './analysis.js';
 
@@ -164,19 +164,25 @@ export function createLibrary(ctx) {
     getSettings: async () => (await fs.getDoc(ref('settings', 'nightly'))).data() || {},
     todaySpent: async () => (await fs.getDoc(ref('aiUsage', new Date().toISOString().slice(0, 10)))).data()?.usd || 0,
     nextTask: async () => {
+      // 프로그램을 켠 뒤 교재 정리 탭을 한 번도 안 열었어도 폴더·교재 정보를 직접 불러옴
+      if (!st.roots.length) await refreshRoots();
+      if (!Object.keys(st.meta).length) await loadMeta();
       // 색인 없이 쓰려고 '상태 + 우선순위' 같음 조건으로만 차례대로 찾음
-      let d = null, t = null, root = null;
-      for (let p = 0; p <= 3 && !d; p++) {
+      for (let p = 0; p <= 3; p++) {
         const s = await fs.getDocs(fs.query(col('analysisQueue'), fs.where('status', '==', 'queued'), fs.where('priority', '==', p), fs.limit(30)));
         for (const x of [...s.docs].sort((a, b) => (a.data().createdAt || 0) - (b.data().createdAt || 0))) {
-          const r = st.roots.find((rr) => rr.label === x.data().label);
-          if (!r || (await F.permission(r)) !== 'granted') { await fs.updateDoc(x.ref, { status: 'waiting-folder' }); continue; }
-          d = x; t = x.data(); root = r; break;
+          const t = x.data(); const m = st.meta[t.bookId];
+          // 학교 시험지로 다시 분류됐거나 이미 단원 수가 있는 교재는 건너뜀
+          if (t.task === 'toc' && (m?.kind === '기출·시험지' || isExam(t.title) || m?.units)) { await fs.updateDoc(x.ref, { status: 'skipped' }); continue; }
+          const r = st.roots.find((rr) => rr.label === t.label);
+          if (!r) { await fs.updateDoc(x.ref, { status: 'waiting-folder' }); continue; }
+          // 크롬을 다시 켜서 폴더 허락이 풀렸으면, 대기 목록은 그대로 두고 멈춤 (아침에 "MYBOX 다시 연결"을 누르면 다음 밤에 이어서)
+          if ((await F.permission(r)) !== 'granted') { ctx.toast?.('MYBOX 폴더 허락이 필요해 새벽 분석을 쉬었습니다'); return null; }
+          const file = await F.openFile(r, t.rel);
+          return { id: x.id, ref: x.ref, title: t.title, task: t, run: t.task === 'toc' ? tocTask({ file, title: t.title }) : retypeTask({ file, title: t.title, cursor: t.cursor || 1 }) };
         }
       }
-      if (!d) return null;
-      const file = await F.openFile(root, t.rel);
-      return { id: d.id, ref: d.ref, title: t.title, task: t, run: t.task === 'toc' ? tocTask({ file, title: t.title }) : retypeTask({ file, title: t.title, cursor: t.cursor || 1 }) };
+      return null;
     },
     saveResult: async (task, res) => {
       if (res.error) { await fs.updateDoc(task.ref, { status: 'error', error: res.error, at: Date.now() }); return; }

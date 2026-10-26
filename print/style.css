@@ -44,10 +44,11 @@ html, body { background: #fff; color: var(--ink); font-family: var(--sans); -web
 .q .pts { font-family: var(--sans); font-weight: 700; font-size: 8.5pt; }
 .q .stem { word-break: keep-all; }
 .q .fig { margin: 2mm 0 1mm; text-align: center; }
-.q .fig svg { max-width: 100%; height: auto; }
+.q .fig svg { max-width: 100%; height: auto; max-height: 62mm; }
+.q .fig svg:not([style*="width"]) { width: 54mm; }
+.q .fig img { max-width: 82%; max-height: 62mm; }
 .q .fig.pending { border: .3mm dashed var(--gold2); border-radius: 1mm; padding: 1mm; position: relative; }
 .q .fig.pending::after { content: '그림 다시 그리기 대기'; position: absolute; right: 1mm; top: 1mm; font: 6.5pt var(--sans); color: var(--gold); background: var(--gtint); padding: 0 1.5mm; border-radius: .8mm; }
-.q .fig img { max-width: 100%; }
 .q .box { border: .3mm solid var(--g); border-radius: 1.2mm; padding: 2mm 3mm 1.5mm; margin: 2mm 0; position: relative; }
 .q .box .bt { position: absolute; top: -2.2mm; left: 3mm; background: #fff; padding: 0 1.5mm; font: 700 7.5pt var(--sans); color: var(--g); }
 .q .ch { display: grid; column-gap: 3mm; row-gap: .5mm; margin-top: 1.5mm; }
