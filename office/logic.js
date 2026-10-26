@@ -52,7 +52,8 @@ export function weakness(student) {
   const withCause = items.filter((x) => x.cause);
   const causes = CAUSES.map((c) => ({ cause: c, n: withCause.filter((x) => x.cause === c).length }))
     .map((c) => ({ ...c, pct: withCause.length ? Math.round((c.n / withCause.length) * 100) : 0 }));
-  return { total: items.length, done: items.filter((x) => x.done).length, top: units.slice(0, 3), units, causes, causeCount: withCause.length, comment: comment(student, units, causes, withCause.length, items.length) };
+  const recent = items.filter((x) => x.at > Date.now() - 14 * 864e5).length;
+  return { total: items.length, done: items.filter((x) => x.done).length, recent, top: units.slice(0, 3), units, causes, causeCount: withCause.length, comment: comment(student, units, causes, withCause.length, items.length) };
 }
 
 const CAUSE_TIP = {

@@ -16,6 +16,24 @@ const db = getFirestore(app);
 
 const S = { aid: null, role: null, uid: null, students: [], queue: [], usage: null, tab: 'todo', weakSid: null, unsub: [], first: true, busy: false };
 
+// ---------- Claude 의견 (교무실 전용 서버) ----------
+const OFFICE_API = 'https://ai-office-api.ilmvm66.workers.dev';
+const AI_KEY = 'office.aiComments';
+const aiCache = store.get(AI_KEY, {});
+const sig = (w) => [w.total, w.done, w.causeCount, w.units.slice(0, 5).map((u) => u.unit + u.n).join('|')].join('/');
+function cachedAi(st, w) { const c = aiCache[st.id]; return c && c.sig === sig(w) ? c : null; }
+async function askClaude(st, w) {
+  const hit = cachedAi(st, w); if (hit) return hit.text;
+  const token = await auth.currentUser.getIdToken();
+  const body = { grade: st.grade || '', total: w.total, done: w.done, recent: w.recent, causeCount: w.causeCount, units: w.units.slice(0, 8), causes: w.causes };
+  const res = await fetch(OFFICE_API + '/comment', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || !j.text) throw new Error(j.error || `요청 실패 (${res.status})`);
+  const text = j.text.replace('이 학생', `${st.name || '이'} 학생`);
+  aiCache[st.id] = { sig: sig(w), text, at: Date.now() }; store.set(AI_KEY, aiCache);
+  return text;
+}
+
 // ---------- 시계 ----------
 const tick = () => { $('#clock').textContent = new Date().toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' }); };
 tick(); setInterval(tick, 20000);
@@ -172,8 +190,23 @@ function drawTab() {
           <p class="muted small">전체 오답 ${w.total}문항 · 오답노트 완료 ${w.done}</p></div>
         <div><h3>틀린 원인</h3>${w.causeCount ? w.causes.map((c) => `<div class="bar"><span>${c.cause}</span><div class="track"><div class="fill" style="width:${c.pct}%"></div></div><span>${c.pct}%</span></div>`).join('') : '<p class="muted small">원인이 체크된 문항이 아직 없어요. 오답 입력 때 원인을 함께 고르면 분석돼요.</p>'}</div>
       </div>
-      <div class="comment"><b>오답노트 담당 의견</b><br>${esc(w.comment)}</div>`;
+      <div class="comment"><div class="row between wrap-gap"><b>오답노트 담당 의견</b><span class="muted small" id="aiTag">${cachedAi(st, w) ? 'Claude 의견' : '기본 분석'}</span></div>
+        <p id="aiText" style="margin:6px 0 10px">${esc(cachedAi(st, w)?.text || w.comment)}</p>
+        <button class="ghost" type="button" id="aiBtn">${cachedAi(st, w) ? 'Claude 의견 다시 보기' : 'Claude에게 의견 받기'}</button></div>`;
     $('#weakSel').onchange = (e) => { S.weakSid = e.target.value; drawTab(); };
+    $('#aiBtn').onclick = async () => {
+      const btn = $('#aiBtn'); btn.disabled = true; btn.textContent = 'Claude가 쓰는 중…';
+      staff('work', `${st.name} 학생 오답을 살펴보고 있어요.`);
+      try {
+        const text = await askClaude(st, w);
+        $('#aiText').textContent = text; $('#aiTag').textContent = 'Claude 의견';
+        staff('done', text); say(text); log('오답노트 담당', text);
+      } catch (e) {
+        staff('done', 'Claude 의견을 받지 못해 기본 분석을 보여 드려요.', true); log('오답노트 담당', 'Claude 의견 실패: ' + e.message);
+      }
+      btn.disabled = false; btn.textContent = 'Claude 의견 다시 보기';
+      setTimeout(drawStaff, 15000);
+    };
   } else {
     const q = queueSummary(S.queue); const u = S.usage;
     body.innerHTML = `<div class="kv"><div>대기 문항<b>${q.queued}</b></div><div>처리 오류<b>${q.error}</b></div><div>폴더 연결 필요<b>${q.waiting}</b></div><div>오늘 AI 사용<b>$${(u?.usd || 0).toFixed(2)}</b><span class="muted small">${u?.calls || 0}회</span></div></div>
@@ -206,7 +239,13 @@ $('#orderForm').onsubmit = async (e) => {
     setTab('todo');
   } else if (task === 'weak') {
     const st = S.students.find((s) => s.id === $('#orderStudent').value);
-    if (!st) msg = '분석할 학생을 골라 주세요.'; else { const w = weakness(st); msg = w.comment; S.weakSid = st.id; setTab('weak'); }
+    if (!st) msg = '분석할 학생을 골라 주세요.';
+    else {
+      const w = weakness(st); S.weakSid = st.id;
+      staff('work', `${st.name} 학생 오답을 Claude와 살펴보고 있어요.`);
+      try { msg = await askClaude(st, w); } catch (err) { msg = w.comment; log('오답노트 담당', 'Claude 의견 실패, 기본 분석으로 대신해요: ' + err.message); }
+      setTab('weak');
+    }
   } else {
     const q = queueSummary(S.queue);
     msg = `대기 문항 ${q.queued}개, 처리 오류 ${q.error}개${q.waiting ? `, 폴더 연결이 필요한 작업 ${q.waiting}개` : ''}예요. 오늘 AI 사용액은 ${(S.usage?.usd || 0).toFixed(2)}달러예요.`;
