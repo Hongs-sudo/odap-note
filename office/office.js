@@ -1,7 +1,7 @@
 // 수학도서관 AI 교무실 — 오답노트 담당 (오답노트 프로그램 데이터와 연결)
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signInWithRedirect, signOut } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getFirestore, doc, getDoc, collection, query, where, orderBy, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+import { initializeFirestore, doc, getDoc, getDocsFromServer, collection, query, where, orderBy, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import { FIREBASE_CONFIG } from '../config.js';
 import { pendingList, weakness, newRecords, queueSummary } from './logic.js';
 
@@ -12,7 +12,8 @@ const store = { get(k, d) { try { const v = localStorage.getItem(k); return v ==
 
 const app = initializeApp(FIREBASE_CONFIG);
 const auth = getAuth(app);
-const db = getFirestore(app);
+// 일부 브라우저(앱 내장 브라우저, 회사·학원 네트워크)는 실시간 연결을 끊으므로 롱폴링 방식으로 연결
+const db = initializeFirestore(app, { experimentalForceLongPolling: true });
 
 const S = { aid: null, role: null, uid: null, students: [], queue: [], usage: null, tab: 'todo', weakSid: null, unsub: [], first: true, busy: false };
 
@@ -117,7 +118,13 @@ function fail(msg) { conn('연결 안 됨', true); staff('idle', msg, true); $('
 function listen() {
   const col = (n) => collection(db, 'academies', S.aid, n);
   const sq = S.role === 'owner' ? query(col('students'), orderBy('name')) : query(col('students'), where('teacherUid', '==', S.uid), orderBy('name'));
-  S.unsub.push(onSnapshot(sq, (snap) => { S.students = snap.docs.map((d) => ({ id: d.id, ...d.data() })); onStudents(); }, (e) => fail('학생 정보를 읽지 못했어요: ' + e.message)));
+  S.unsub.push(onSnapshot(sq, (snap) => {
+    if (snap.metadata.fromCache && snap.empty) return; // 아직 서버 응답 전: 빈 화면으로 덮지 않음
+    S.students = snap.docs.map((d) => ({ id: d.id, ...d.data() })); onStudents();
+  }, (e) => fail('학생 정보를 읽지 못했어요: ' + e.message)));
+  // 실시간 연결이 막혀도 1분마다 서버에서 다시 읽어 옴
+  const pull = async () => { try { const snap = await getDocsFromServer(sq); S.students = snap.docs.map((d) => ({ id: d.id, ...d.data() })); onStudents(); } catch { /* 다음에 다시 */ } };
+  pull(); const t = setInterval(pull, 60000); S.unsub.push(() => clearInterval(t));
   S.unsub.push(onSnapshot(query(col('analysisQueue'), where('status', 'in', ['queued', 'error', 'waiting-folder'])), (snap) => { S.queue = snap.docs.map((d) => ({ id: d.id, ...d.data() })); drawStats(); if (S.tab === 'queue') drawTab(); }, () => {}));
   const day = new Date().toISOString().slice(0, 10);
   S.unsub.push(onSnapshot(doc(db, 'academies', S.aid, 'aiUsage', day), (d) => { S.usage = d.data() || null; if (S.tab === 'queue') drawTab(); }, () => {}));
