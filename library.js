@@ -138,16 +138,25 @@ export function createLibrary(ctx) {
   }
 
   // ---------- 새벽 분석 ----------
+  // 우선순위: 0 중2-2 내신대비 → 1 중2-2 기타 → 2 다른 중등 → 3 나머지
+  const prioOf = (b) => (b.grade.startsWith('중2-2') ? (b.kind === '내신대비' ? 0 : 1) : b.grade.startsWith('중') ? 2 : 3);
   async function queueToc() {
-    const todo = st.books.filter((b) => !unitsOf(b) && !b.zipped && b.files.some((f) => f.ext === 'pdf' && f.role === '본책') && !['교과서 자료', '한글/기타', '수업자료'].includes(b.kind));
+    const todo = st.books.filter((b) => !unitsOf(b) && !b.zipped && b.files.some((f) => f.ext === 'pdf' && f.role === '본책') && !['교과서 자료', '한글/기타', '수업자료', '기출·시험지'].includes(b.kind));
+    const want = new Set(todo.map((b) => 'toc_' + bookId(b.key)));
     let batch = fs.writeBatch(db), n = 0;
+    const step = async () => { if (++n % 400 === 0) { await batch.commit(); batch = fs.writeBatch(db); } };
     for (const b of todo) {
       const f = b.files.find((x) => x.ext === 'pdf' && x.role === '본책' && x.audience === '교사용') || b.files.find((x) => x.ext === 'pdf' && x.role === '본책');
-      batch.set(ref('analysisQueue', 'toc_' + bookId(b.key)), { task: 'toc', bookId: bookId(b.key), title: b.title, label: f.label, rel: f.rel, status: 'queued', createdAt: Date.now(), priority: b.grade.startsWith('중2-2') ? 0 : b.grade.startsWith('중') ? 1 : 2 }, { merge: true });
-      if (++n % 400 === 0) { await batch.commit(); batch = fs.writeBatch(db); }
+      batch.set(ref('analysisQueue', 'toc_' + bookId(b.key)), { task: 'toc', bookId: bookId(b.key), title: b.title, label: f.label, rel: f.rel, status: 'queued', createdAt: Date.now(), priority: prioOf(b) }, { merge: true });
+      await step();
     }
+    // 예전에 넣었지만 이제 대상이 아닌 것(학교 시험지 등)은 건너뜀으로 표시
+    let skipped = 0;
+    const old = await fs.getDocs(fs.query(col('analysisQueue'), fs.where('status', '==', 'queued')));
+    for (const d of old.docs) if (d.data().task === 'toc' && !want.has(d.id)) { batch.update(d.ref, { status: 'skipped' }); skipped++; await step(); }
     await batch.commit();
-    ctx.toast(`단원 수 분석 대기 ${todo.length}권 (중2-2 교재부터)`);
+    const first = todo.filter((b) => prioOf(b) === 0).length;
+    ctx.toast(`단원 수 분석 대기 ${todo.length}권 (중2-2 내신대비 ${first}권부터)` + (skipped ? ` · 시험지 등 ${skipped}건 제외` : ''));
   }
 
   const runner = createRunner({
@@ -155,12 +164,17 @@ export function createLibrary(ctx) {
     getSettings: async () => (await fs.getDoc(ref('settings', 'nightly'))).data() || {},
     todaySpent: async () => (await fs.getDoc(ref('aiUsage', new Date().toISOString().slice(0, 10)))).data()?.usd || 0,
     nextTask: async () => {
-      // 색인 없이 쓰려고 상태로만 거른 뒤 우선순위는 여기서 정렬
-      const s = await fs.getDocs(fs.query(col('analysisQueue'), fs.where('status', '==', 'queued'), fs.limit(200)));
-      if (s.empty) return null;
-      const d = [...s.docs].sort((x, y) => (x.data().priority ?? 9) - (y.data().priority ?? 9) || (x.data().createdAt || 0) - (y.data().createdAt || 0))[0]; const t = d.data();
-      const root = st.roots.find((r) => r.label === t.label);
-      if (!root || (await F.permission(root)) !== 'granted') { await fs.updateDoc(d.ref, { status: 'waiting-folder' }); return null; }
+      // 색인 없이 쓰려고 '상태 + 우선순위' 같음 조건으로만 차례대로 찾음
+      let d = null, t = null, root = null;
+      for (let p = 0; p <= 3 && !d; p++) {
+        const s = await fs.getDocs(fs.query(col('analysisQueue'), fs.where('status', '==', 'queued'), fs.where('priority', '==', p), fs.limit(30)));
+        for (const x of [...s.docs].sort((a, b) => (a.data().createdAt || 0) - (b.data().createdAt || 0))) {
+          const r = st.roots.find((rr) => rr.label === x.data().label);
+          if (!r || (await F.permission(r)) !== 'granted') { await fs.updateDoc(x.ref, { status: 'waiting-folder' }); continue; }
+          d = x; t = x.data(); root = r; break;
+        }
+      }
+      if (!d) return null;
       const file = await F.openFile(root, t.rel);
       return { id: d.id, ref: d.ref, title: t.title, task: t, run: t.task === 'toc' ? tocTask({ file, title: t.title }) : retypeTask({ file, title: t.title, cursor: t.cursor || 1 }) };
     },

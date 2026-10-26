@@ -16,9 +16,20 @@ export function gradeSem(n) {
   if (/수능|고등|고[123]/.test(n)) return '고등';
   let m = n.match(/(?:중\s*|중등|중학\s*수학\s*|중등수학\s*|^|[^0-9])([123])\s*-\s*\(?(상|하|[12])\)?/);
   if (m) return `중${m[1]}-${({ 상: '1', 하: '2' })[m[2]] || m[2]}`;
-  m = n.match(/중\s*([123])/); if (m) return `중${m[1]}`;
-  m = n.match(/([1-3])학년|([7-9])학년/); if (m) return `중${m[1] || m[2] - 6}`;
-  return '';
+  // '중2_2학기', '2학년 2학기', '2학기 … 1학년'처럼 학년·학기가 따로 적힌 경우 ('2024학년도'는 학년으로 보지 않음)
+  let g = '';
+  m = n.match(/중\s*([123])/); if (m) g = m[1];
+  else { m = n.match(/(?<![0-9])([1-3])\s*학년(?!도)|(?<![0-9])([7-9])\s*학년(?!도)/); if (m) g = m[1] || String(m[2] - 6); }
+  if (!g) return '';
+  const sm = n.match(/(?<![0-9])([12])\s*학기/);
+  return sm ? `중${g}-${sm[1]}` : `중${g}`;
+}
+// 학교 기출 시험지·배점표·원안 (교재가 아니라 목차 분석은 하지 않고, 유사문항 찾기 자료로만 씀)
+export const isExam = (n) => /고사\s*원안|원안|배점표|채점\s*기준|채점표|서술형\s*채점|시험지|기출/.test(n) || (/(중간|기말)\s*고사/.test(n) && /학년도|20\d\d/.test(n) && !/대비/.test(n));
+// 파일 이름에 학기가 없으면 폴더 경로에서 보충 (예: 중2_2학기 전범위/내신대비B)
+function gradeOf(f) {
+  const a = gradeSem(f.name), b = gradeSem(f.parts.join('/') + '/' + f.name);
+  if (!a) return b; if (a.includes('-') || !b.startsWith(a + '-')) return a; return b;
 }
 export const edition = (n) => (/2022|22\s*개정|2025 중1 적용/.test(n) ? '22개정' : /2015|15\s*개정|2019개정/.test(n) ? '15개정' : '');
 const series = (parts) => { for (const p of parts) { const m = p.match(/^\((중등|고등)\)\s*(.+)/); if (m) return m[2].replace(/_부가자료$/, '').trim(); } return ''; };
@@ -73,16 +84,16 @@ export function buildCatalog(files) {
     else if (f.label.includes('2022개정') && top === '정명T') { const sub = f.parts[1] || top; key = 'jm|' + sub; title = '정명T 자료 · ' + sub; kind = '수업자료'; }
     else if (f.label.includes('교과서')) { const t = cleanTitle(f.stem).replace(/(편집|전범위).*$/, '$1'); key = 'tbe|' + t; title = '교과서 편집본 · ' + t; kind = '교과서 자료'; }
     else if (f.ext === 'pdf' || f.ext === 'zip') {
-      const ser = series(f.parts); const gs = gradeSem(f.name) || gradeSem(f.parts.join('/'));
+      const ser = series(f.parts); const gs = gradeOf(f);
       let comp = fileRole(f.name); if (comp === '정답·해설' || comp === '빠른정답') comp = '본책';
       const ed = edition(f.name);
       if (ser) { title = `${ser} ${gs}`.trim() + (comp !== '본책' ? ' ' + comp : '') + (f.name.includes('특강') && !ser.includes('특강') ? ' 특강' : ''); key = ['s', ser, gs, comp === '본책' ? '' : comp, ed].join('|'); }
       else { title = cleanTitle(f.stem); key = 'f|' + f.label + '|' + title; }
       if (ed) title += ` (${ed})`;
-      kind = ser ? '시중교재' : (/내신대비/.test(f.label + f.name) ? '내신대비' : gs.startsWith('고등') ? '고등 교재' : '기타');
+      kind = ser ? '시중교재' : isExam(f.name) ? '기출·시험지' : (/내신대비/.test(f.label + f.name) ? '내신대비' : gs.startsWith('고등') ? '고등 교재' : '기타');
     } else { key = 'etc|' + f.label + '|' + top; title = '한글·기타 파일 · ' + (top || f.label); kind = '한글/기타'; }
     if (!books.has(key)) books.set(key, { key, title, kind, files: [], grade: '' });
-    const b = books.get(key); b.files.push(f); if (!b.grade) b.grade = gradeSem(f.name) || gradeSem(title);
+    const b = books.get(key); b.files.push(f); if (!b.grade) b.grade = gradeOf(f) || gradeSem(title);
   }
   const out = [];
   for (const b of books.values()) {
