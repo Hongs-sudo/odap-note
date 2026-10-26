@@ -8,9 +8,31 @@ window.__layout = function () {
   function el(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
   function esc(s) { return String(s || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
+  // ---------- 제목 맞추기: 한 줄에 들어가면 그대로, 조금 넘치면 글자를 살짝 줄이고(최대 82%), 그래도 넘치면 두 줄로 고르게 나눔 ----------
+  const cv = document.createElement('canvas').getContext('2d');
+  const textW = (t, font) => { cv.font = font; return cv.measureText(t).width; };
+  function fitText(text, px, weight, avail, seps = [' ']) {
+    text = String(text || '').replace(/\s+/g, ' ').trim();
+    const F = (s) => `${weight} ${s}px "Noto Sans KR", sans-serif`;
+    const w = textW(text, F(px));
+    if (w <= avail) return { html: esc(text), px };
+    if (avail / w >= 0.82) return { html: esc(text), px: px * avail / w * 0.98 };
+    let best = null;
+    for (const sep of seps) {
+      const parts = text.split(sep); if (parts.length < 2) continue;
+      for (let i = 1; i < parts.length; i++) { const a = parts.slice(0, i).join(sep).trim(), b = parts.slice(i).join(sep).trim(); const m = Math.max(textW(a, F(px)), textW(b, F(px))); if (!best || m < best.m) best = { a, b, m }; }
+      if (best) break;
+    }
+    if (!best) return { html: esc(text), px: px * avail / w * 0.98 };
+    return { html: `${esc(best.a)}<br>${esc(best.b)}`, px: best.m > avail ? px * avail / best.m * 0.98 : px, two: true };
+  }
+  window.__fitText = fitText;
+  const PT = 96 / 72;
   function makePage(d) {
-    return el(`<div class="page"><div class="hd"><div><div class="kick">${esc(d.kick)}</div><h1>${esc(d.title)}</h1></div><img class="logo" src="${LOGO}"></div>
-      <div class="bar"><span class="chip">${esc(d.chip)}</span><span class="unit">${esc(d.unit)}</span>${d.nowho ? '' : `<span class="who"><span>${esc(meta.grade || '')}</span><span>반 <u></u></span><span>이름 <u></u></span></span>`}</div>
+    const t = fitText(d.title, 17 * PT, 700, mm(210 - 28 - 39.2 - 6));
+    const u = fitText(d.unit, 8.5 * PT, 400, mm(76), [' · ', ' ']);
+    return el(`<div class="page"><div class="hd"><div><div class="kick">${esc(d.kick)}</div><h1 style="font-size:${t.px.toFixed(1)}px${t.two ? ';line-height:1.22' : ''}">${t.html}</h1></div><img class="logo" src="${LOGO}"></div>
+      <div class="bar"><span class="chip">${esc(d.chip)}</span><span class="unit" style="font-size:${u.px.toFixed(1)}px;line-height:1.3">${u.html}</span>${d.nowho ? '' : `<span class="who"><span>${esc(meta.grade || '')}</span><span>반 <u></u></span><span>이름 <u></u></span></span>`}</div>
       <div class="body"></div><div class="ft"><span>${esc((meta.footer || '') + (d.chip ? ' · ' + d.chip : ''))}</span><span class="pg"></span><img src="${LOGO}"></div></div>`);
   }
 
@@ -154,6 +176,12 @@ window.__layout = function () {
   // 쪽 번호
   const numbered = [...document.querySelectorAll('.page')].filter((p) => p.querySelector('.pg, .hs-pg'));
   numbered.forEach((p, i) => { const g = p.querySelector('.pg'); if (g) g.textContent = `${i + 1} / ${numbered.length}`; const h = p.querySelector('.hs-pg'); if (h) h.textContent = i + 1; });
+  // 표지의 작은 제목(교재명 등)도 같은 규칙으로
+  document.querySelectorAll('.fit').forEach((n) => {
+    const cs = getComputedStyle(n);
+    const r = fitText(n.textContent, parseFloat(cs.fontSize), cs.fontWeight, n.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), [' · ', ' ']);
+    n.innerHTML = r.html; n.style.fontSize = r.px.toFixed(1) + 'px'; n.style.whiteSpace = 'nowrap'; if (r.two) n.style.lineHeight = '1.45';
+  });
   report.pages = document.querySelectorAll('.page').length;
   return report;
 };

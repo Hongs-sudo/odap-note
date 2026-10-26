@@ -109,3 +109,7 @@ table.ans td:first-child { background: #FBF8F1; font-weight: 700; color: var(--g
 .q .fig.crop { margin: 1mm 0 0; text-align: left; }
 .q .fig.crop img { max-width: 100%; height: auto; max-height: none; }
 .sol img.crop { max-width: 100%; height: auto; display: block; margin-top: 1mm; }
+
+.hd > div:first-child { flex: 1; min-width: 0; }
+.hd h1 { white-space: nowrap; }
+.bar .unit { white-space: nowrap; }
