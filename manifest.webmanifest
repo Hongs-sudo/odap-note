@@ -3,7 +3,7 @@
   "short_name": "오답노트",
   "description": "수학도서관 오답노트 · 유사문항 · 약점보완",
   "lang": "ko",
-  "id": "./",
+  "id": "/odap-note/",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
