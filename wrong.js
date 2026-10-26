@@ -11,6 +11,10 @@ const hash = (s) => { let h = 2166136261; for (const ch of String(s)) { h ^= ch.
 const clean = (o) => JSON.parse(JSON.stringify(o)); // Firestore는 undefined를 받지 않음
 const CAUSES = ['계산', '개념', '조건', '시간', '찍음'];
 const today = () => new Date().toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' });
+const GRADES = ['중1-1', '중1-2', '중2-1', '중2-2', '중3-1', '중3-2', '중1', '중2', '중3', '고등', '전체 학년'];
+const KINDS = ['내신대비', '시중교재', '교과서 자료', '고등 교재', '기출·시험지', '기타', '전체 분류'];
+// 학생 학년 + 지금 학기 (8월~1월은 2학기)
+const defaultGrade = (g) => { const m = String(g || '').match(/[1-3]/); if (!m) return '전체 학년'; const mo = new Date().getMonth() + 1; return `중${m[0]}-${mo >= 8 || mo <= 1 ? 2 : 1}`; };
 const itemId = (bid, sec, no) => `${bid}_${hash(sec)}_${normNo(no)}`;
 
 export function createWrong(ctx) {
@@ -77,32 +81,38 @@ export function createWrong(ctx) {
     try { await ensureFolders(); } catch { /* 허락은 교재를 열 때 다시 확인 */ }
     const list = await catalog();
     const mine = (student.catalogIds || []).map(bookOf).filter(Boolean);
-    const st = { bid: mine[0]?.id || '', type: '내신대비', picked: {}, solved: new Set(), causes: {}, q: '' };
+    const st = { bid: mine[0]?.id || '', type: '내신대비', picked: {}, solved: new Set(), causes: {}, q: '', fg: defaultGrade(student.grade), fk: '내신대비' };
 
     const draw = async () => {
       const b = bookOf(st.bid);
       ctx.openModal(`<div class="wide"><h2>${esc(student.name)} · 오답 입력</h2>
         <div class="row"><select id="wBook" style="flex:1"><option value="">교재 고르기</option>${mine.map((x) => `<option value="${x.id}" ${x.id === st.bid ? 'selected' : ''}>${esc(x.title)}</option>`).join('')}${b && !mine.includes(b) ? `<option value="${b.id}" selected>${esc(b.title)}</option>` : ''}</select>
           <select id="wType" style="width:auto"><option ${st.type === '내신대비' ? 'selected' : ''}>내신대비</option><option ${st.type === '수업' ? 'selected' : ''}>수업</option></select></div>
-        <div class="row" style="margin-top:6px"><input type="text" id="wFind" placeholder="다른 교재 찾기 (이름 일부)" value="${esc(st.q)}" style="flex:1"><button class="ghost small" id="wFindGo">찾기</button></div>
-        <div id="wFound"></div>
+        <details id="wBrowse" ${mine.length ? '' : 'open'} style="margin-top:6px"><summary class="small" style="cursor:pointer;color:var(--green)">교재 목록에서 고르기 / 추가하기</summary>
+          <div class="row" style="margin-top:6px"><select id="fG" style="width:auto">${GRADES.map((g) => `<option ${st.fg === g ? 'selected' : ''}>${g}</option>`).join('')}</select>
+            <select id="fK" style="width:auto">${KINDS.map((k) => `<option ${st.fk === k ? 'selected' : ''}>${k}</option>`).join('')}</select>
+            <input type="text" id="wFind" placeholder="이름 일부 (띄어쓰기 무시)" value="${esc(st.q)}" style="flex:1"></div>
+          <div id="wFound"></div></details>
         <div id="wGrid" style="margin-top:10px">${b ? '<p class="muted small">교재 구역을 읽는 중… (처음 한 번만, 몇 초 걸립니다)</p>' : '<p class="muted small">교재를 고르세요.</p>'}</div>
         <div class="row between" style="margin-top:14px"><span class="muted small" id="wSum"></span><div class="row"><button class="ghost" data-a="close">취소</button><button class="primary" id="wSave">저장</button></div></div></div>`);
       document.getElementById('wBook').onchange = (e) => { st.bid = e.target.value; st.picked = {}; st.solved = new Set(); draw(); };
       document.getElementById('wType').onchange = (e) => { st.type = e.target.value; };
       const find = () => {
-        st.q = document.getElementById('wFind').value.trim(); if (!st.q) return;
-        const hits = list.filter((x) => x.title.includes(st.q)).slice(0, 30);
-        document.getElementById('wFound').innerHTML = `<div class="list" style="max-height:180px">${hits.map((x) => `<button data-pick="${x.id}"><span>${esc(x.title)}</span><span class="muted small">${esc(x.grade || '')} ${esc(x.kind || '')}</span></button>`).join('') || '<p class="muted small pad">찾는 교재가 없습니다.</p>'}</div>`;
-        document.querySelectorAll('[data-pick]').forEach((btn) => btn.onclick = async () => {
-          st.bid = btn.dataset.pick; st.picked = {}; st.solved = new Set();
-          const ids = [...new Set([...(student.catalogIds || []), st.bid])];
-          await saveStudent(student.id, { catalogIds: ids }); student.catalogIds = ids; mine.push(bookOf(st.bid));
-          draw();
-        });
+        st.q = document.getElementById('wFind').value.trim(); st.fg = document.getElementById('fG').value; st.fk = document.getElementById('fK').value;
+        const q = st.q.replace(/[\s_]+/g, '');
+        const hits = list.filter((x) => (st.fg === '전체 학년' || (x.grade || '').startsWith(st.fg)) && (st.fk === '전체 분류' || x.kind === st.fk || (st.fk === '내신대비' && /내신/.test(x.title)))
+          && (!q || x.title.replace(/[\s_]+/g, '').includes(q))).sort((a, b) => a.title.localeCompare(b.title, 'ko'));
+        const add = hits.filter((x) => !(student.catalogIds || []).includes(x.id));
+        document.getElementById('wFound').innerHTML = `<div class="row between" style="margin:6px 0"><span class="muted small">${hits.length}종${hits.length > 300 ? ' (앞 300종만 표시)' : ''}</span>${add.length ? `<button class="ghost small" id="wAddAll">보이는 교재 ${add.length}종 모두 이 학생 교재로 추가</button>` : ''}</div>
+          <div class="list" style="max-height:220px">${hits.slice(0, 300).map((x) => `<button data-pick="${x.id}"><span>${(student.catalogIds || []).includes(x.id) ? '✓ ' : ''}${esc(x.title)}</span><span class="muted small">${esc(x.grade || '')} ${esc(x.kind || '')}</span></button>`).join('') || '<p class="muted small pad">찾는 교재가 없습니다. 학년·분류를 "전체"로 바꿔 보세요.</p>'}</div>`;
+        const addIds = async (more) => { const ids = [...new Set([...(student.catalogIds || []), ...more])]; await saveStudent(student.id, { catalogIds: ids }); student.catalogIds = ids; more.forEach((id) => { const x = bookOf(id); if (x && !mine.includes(x)) mine.push(x); }); };
+        document.querySelectorAll('[data-pick]').forEach((btn) => btn.onclick = async () => { await addIds([btn.dataset.pick]); st.bid = btn.dataset.pick; st.picked = {}; st.solved = new Set(); draw(); });
+        const all = document.getElementById('wAddAll');
+        if (all) all.onclick = async () => { await addIds(add.map((x) => x.id)); ctx.toast(`${add.length}종을 추가했습니다. 위 목록에서 교재를 고르세요.`); if (!st.bid) st.bid = add[0]?.id || ''; draw(); };
       };
-      document.getElementById('wFindGo').onclick = find;
-      document.getElementById('wFind').onkeydown = (e) => { if (e.key === 'Enter') find(); };
+      ['fG', 'fK'].forEach((id) => document.getElementById(id).onchange = find);
+      document.getElementById('wFind').oninput = find;
+      find();
       document.getElementById('wSave').onclick = save;
       if (b) {
         try {

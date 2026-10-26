@@ -25,7 +25,7 @@ export function gradeSem(n) {
   return sm ? `중${g}-${sm[1]}` : `중${g}`;
 }
 // 학교 기출 시험지·배점표·원안 (교재가 아니라 목차 분석은 하지 않고, 유사문항 찾기 자료로만 씀)
-export const isExam = (n) => /고사\s*원안|원안|배점표|채점\s*기준|채점표|서술형\s*채점|시험지|기출/.test(n) || (/(중간|기말)\s*고사/.test(n) && /학년도|20\d\d/.test(n) && !/대비/.test(n));
+export const isExam = (n) => /고사\s*원안|원안|배점표|채점\s*기준|채점표|서술형\s*채점|시험지/.test(n) || (/(중간|기말)\s*고사/.test(n) && /학년도|20\d\d/.test(n) && !/대비/.test(n));
 // 파일 이름에 학기가 없으면 폴더 경로에서 보충 (예: 중2_2학기 전범위/내신대비B)
 function gradeOf(f) {
   const a = gradeSem(f.name), b = gradeSem(f.parts.join('/') + '/' + f.name);
