@@ -15,6 +15,13 @@ const GRADES = ['중1-1', '중1-2', '중2-1', '중2-2', '중3-1', '중3-2', '중
 const KINDS = ['내신대비', '시중교재', '교과서 자료', '고등 교재', '기출·시험지', '기타', '전체 분류'];
 // 학생 학년 + 지금 학기 (8월~1월은 2학기)
 const defaultGrade = (g) => { const m = String(g || '').match(/[1-3]/); if (!m) return '전체 학년'; const mo = new Date().getMonth() + 1; return `중${m[0]}-${mo >= 8 || mo <= 1 ? 2 : 1}`; };
+// 구역 제목 → 단원 이름 (예: "1.1 삼각형의 성질 2회차 - 3레벨" → "삼각형의 성질", "시험지/1.1 유리수와 소수" → "유리수와 소수")
+export const unitName = (label) => {
+  const raw = String(label || '');
+  const u = raw.replace(/^[^/]+\//, '').replace(/\s*-\s*\d+\s*레벨/, '').replace(/\s*\d+\s*회차.*$/, '').replace(/\s*\(\d+\)\s*$/, '').replace(/^\d+(\.\d+)*\s*/, '').trim();
+  return u || raw.split('/')[0].trim() || raw;
+};
+const wkey = (bookId, sec, no) => hash(`${bookId}|${sec}|${normNo(no)}`);
 const itemId = (bid, sec, no) => `${bid}_${hash(sec)}_${normNo(no)}`;
 
 export function createWrong(ctx) {
@@ -83,11 +90,20 @@ export function createWrong(ctx) {
     const mine = (student.catalogIds || []).map(bookOf).filter(Boolean);
     const st = { bid: mine[0]?.id || '', type: '내신대비', picked: {}, solved: new Set(), causes: {}, q: '', fg: defaultGrade(student.grade), fk: '내신대비' };
 
+    const dropBook = async (id) => {
+      if (!(await removeBook(student, id))) return false;
+      const i = mine.findIndex((x) => x.id === id); if (i >= 0) mine.splice(i, 1);
+      if (st.bid === id) { st.bid = mine[0]?.id || ''; st.picked = {}; st.solved = new Set(); setTimeout(draw, 0); }
+      else { const sel = document.getElementById('wBook'); sel?.querySelector(`option[value="${id}"]`)?.remove(); }
+      return true;
+    };
     const draw = async () => {
       const b = bookOf(st.bid);
       ctx.openModal(`<div class="wide"><h2>${esc(student.name)} · 오답 입력</h2>
         <div class="row"><select id="wBook" style="flex:1"><option value="">교재 고르기</option>${mine.map((x) => `<option value="${x.id}" ${x.id === st.bid ? 'selected' : ''}>${esc(x.title)}</option>`).join('')}${b && !mine.includes(b) ? `<option value="${b.id}" selected>${esc(b.title)}</option>` : ''}</select>
+          <button class="ghost small" id="wManage" type="button">교재 관리</button>
           <select id="wType" style="width:auto"><option ${st.type === '내신대비' ? 'selected' : ''}>내신대비</option><option ${st.type === '수업' ? 'selected' : ''}>수업</option></select></div>
+ <div id="wMine" hidden></div>
         <details id="wBrowse" ${mine.length ? '' : 'open'} style="margin-top:6px"><summary class="small" style="cursor:pointer;color:var(--green)">교재 목록에서 고르기 / 추가하기</summary>
           <div class="row" style="margin-top:6px"><select id="fG" style="width:auto">${GRADES.map((g) => `<option ${st.fg === g ? 'selected' : ''}>${g}</option>`).join('')}</select>
             <select id="fK" style="width:auto">${KINDS.map((k) => `<option ${st.fk === k ? 'selected' : ''}>${k}</option>`).join('')}</select>
@@ -97,6 +113,13 @@ export function createWrong(ctx) {
         <div class="row between" style="margin-top:14px"><span class="muted small" id="wSum"></span><div class="row"><button class="ghost" data-a="close">취소</button><button class="primary" id="wSave">저장</button></div></div></div>`);
       document.getElementById('wBook').onchange = (e) => { st.bid = e.target.value; st.picked = {}; st.solved = new Set(); draw(); };
       document.getElementById('wType').onchange = (e) => { st.type = e.target.value; };
+      const mineBox = document.getElementById('wMine');
+      const drawMine = () => {
+        mineBox.innerHTML = `<div class="card" style="margin:6px 0"><b class="small">이 학생 교재 ${mine.length}종</b> <span class="muted small">— 쓰지 않는 교재는 ×로 빼세요. 입력해 둔 오답 기록은 그대로 남습니다.</span>
+          <div style="margin-top:6px">${mine.map((x) => `<div class="row between small" style="border-top:1px solid var(--line);padding:4px 0"><span>${esc(x.title)}</span><button class="ghost small danger" data-rm="${x.id}">× 빼기</button></div>`).join('') || '<p class="muted small">아직 없음</p>'}</div></div>`;
+        mineBox.querySelectorAll('[data-rm]').forEach((btn) => btn.onclick = async () => { if (await dropBook(btn.dataset.rm)) drawMine(); });
+      };
+      document.getElementById('wManage').onclick = () => { mineBox.hidden = !mineBox.hidden; if (!mineBox.hidden) drawMine(); };
       const find = () => {
         st.q = document.getElementById('wFind').value.trim(); st.fg = document.getElementById('fG').value; st.fk = document.getElementById('fK').value;
         const q = st.q.replace(/[\s_]+/g, '');
@@ -104,9 +127,14 @@ export function createWrong(ctx) {
           && (!q || x.title.replace(/[\s_]+/g, '').includes(q))).sort((a, b) => a.title.localeCompare(b.title, 'ko'));
         const add = hits.filter((x) => !(student.catalogIds || []).includes(x.id));
         document.getElementById('wFound').innerHTML = `<div class="row between" style="margin:6px 0"><span class="muted small">${hits.length}종${hits.length > 300 ? ' (앞 300종만 표시)' : ''}</span>${add.length ? `<button class="ghost small" id="wAddAll">보이는 교재 ${add.length}종 모두 이 학생 교재로 추가</button>` : ''}</div>
+          <p class="muted small" style="margin:0 0 4px">누르면 이 학생 교재로 추가됩니다. ✓ 표시된 교재를 다시 누르면 빠집니다.</p>
           <div class="list" style="max-height:220px">${hits.slice(0, 300).map((x) => `<button data-pick="${x.id}"><span>${(student.catalogIds || []).includes(x.id) ? '✓ ' : ''}${esc(x.title)}</span><span class="muted small">${esc(x.grade || '')} ${esc(x.kind || '')}</span></button>`).join('') || '<p class="muted small pad">찾는 교재가 없습니다. 학년·분류를 "전체"로 바꿔 보세요.</p>'}</div>`;
         const addIds = async (more) => { const ids = [...new Set([...(student.catalogIds || []), ...more])]; await saveStudent(student.id, { catalogIds: ids }); student.catalogIds = ids; more.forEach((id) => { const x = bookOf(id); if (x && !mine.includes(x)) mine.push(x); }); };
-        document.querySelectorAll('[data-pick]').forEach((btn) => btn.onclick = async () => { await addIds([btn.dataset.pick]); st.bid = btn.dataset.pick; st.picked = {}; st.solved = new Set(); draw(); });
+        document.querySelectorAll('[data-pick]').forEach((btn) => btn.onclick = async () => {
+          const id = btn.dataset.pick;
+          if ((student.catalogIds || []).includes(id)) { if (await dropBook(id)) find(); return; } // ✓ 교재를 다시 누르면 빼기
+          await addIds([id]); st.bid = id; st.picked = {}; st.solved = new Set(); draw();
+        });
         const all = document.getElementById('wAddAll');
         if (all) all.onclick = async () => { await addIds(add.map((x) => x.id)); ctx.toast(`${add.length}종을 추가했습니다. 위 목록에서 교재를 고르세요.`); if (!st.bid) st.bid = add[0]?.id || ''; draw(); };
       };
@@ -172,12 +200,100 @@ export function createWrong(ctx) {
     draw();
   }
 
+  async function removeBook(student, bid) {
+    const has = (student.records || []).some((r) => r.bookId === bid);
+    if (!confirm(`"${bookOf(bid)?.title || '이 교재'}"을(를) ${student.name} 학생 교재에서 뺄까요?${has ? '\n입력해 둔 오답 기록과 오답노트는 그대로 남습니다.' : ''}`)) return false;
+    const ids = (student.catalogIds || []).filter((x) => x !== bid);
+    await saveStudent(student.id, { catalogIds: ids }); student.catalogIds = ids;
+    return true;
+  }
+
+  // 학생의 오답을 교재 › 구역 단위로 모음 (같은 문항은 한 번만, 원인은 최근 것)
+  function collect(student) {
+    const noted = student.noted || {};
+    const oldDone = new Set((student.sheets || []).flatMap((x) => x.records || [])); // 처음 버전(기록 단위)으로 만든 오답노트
+    const books = new Map();
+    [...(student.records || [])].sort((a, b) => a.at - b.at).forEach((r) => {
+      if (!books.has(r.bookId)) books.set(r.bookId, { bookId: r.bookId, title: r.title, secs: new Map() });
+      const B = books.get(r.bookId);
+      r.wrongs.forEach((w) => {
+        if (!B.secs.has(w.sec)) B.secs.set(w.sec, { sec: w.sec, label: w.label, unit: unitName(w.label), items: new Map() });
+        const k = wkey(r.bookId, w.sec, w.no);
+        B.secs.get(w.sec).items.set(k, { ...w, bookId: r.bookId, title: r.title, k, done: !!noted[k] || oldDone.has(r.id) });
+      });
+    });
+    return [...books.values()].map((B) => ({ ...B, secs: [...B.secs.values()].map((S) => ({ ...S, items: [...S.items.values()] })) }));
+  }
+  // 학생 카드에 보여 줄 교재별 진행
+  function progress(student) {
+    return collect(student).map((B) => {
+      const all = B.secs.flatMap((S) => S.items); const done = all.filter((x) => x.done).length;
+      const left = [...new Set(B.secs.filter((S) => S.items.some((x) => !x.done)).map((S) => S.unit))];
+      return { bookId: B.bookId, title: B.title, total: all.length, done, left };
+    });
+  }
+
+  // ---------- 오답노트 범위 고르기 ----------
+  async function noteSetup(student) {
+    const books = collect(student);
+    if (!books.length) return ctx.toast('먼저 오답을 입력하세요.');
+    ctx.openModal('<p class="pad center">불러오는 중…</p>');
+    const scopes = (await fs.getDocs(col('examScopes'))).docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (b.at || 0) - (a.at || 0));
+    const st = { redo: false, scope: '', on: new Set() };
+    books.forEach((B) => B.secs.forEach((S) => { if (S.items.some((x) => !x.done)) st.on.add(B.bookId + '|' + S.sec); }));
+    const units = [...new Set(books.flatMap((B) => B.secs.map((S) => S.unit)))];
+
+    const count = () => books.reduce((a, B) => a + B.secs.filter((S) => st.on.has(B.bookId + '|' + S.sec)).reduce((x, S) => x + S.items.filter((i) => st.redo || !i.done).length, 0), 0);
+    const draw = () => {
+      ctx.openModal(`<div class="wide"><h2>${esc(student.name)} · 오답노트 범위 고르기</h2>
+        <div class="row"><label class="small">시험 범위</label><select id="nScope" style="width:auto;min-width:220px"><option value="">직접 고르기</option>${scopes.map((x) => `<option value="${x.id}" ${st.scope === x.id ? 'selected' : ''}>${esc(x.name)}${x.school ? ' · ' + esc(x.school) : ''}</option>`).join('')}</select>
+          <button class="ghost small" id="nSaveScope">지금 고른 단원을 범위로 저장</button>${st.scope ? '<button class="ghost small danger" id="nDelScope">이 범위 지우기</button>' : ''}
+          <label class="small row" style="margin-left:auto"><input type="checkbox" id="nRedo" ${st.redo ? 'checked' : ''}> 이미 오답노트에 넣은 문항도 다시 넣기</label></div>
+        <div style="max-height:56vh;overflow:auto;margin-top:8px">${books.map((B) => {
+          const by = new Map(); B.secs.forEach((S) => { if (!by.has(S.unit)) by.set(S.unit, []); by.get(S.unit).push(S); });
+          const all = B.secs.flatMap((S) => S.items); const done = all.filter((x) => x.done).length;
+          return `<div class="card"><div class="row between"><b>${esc(B.title)}</b><span class="muted small">오답 ${all.length}개 · 오답노트 완료 ${done} · 남음 ${all.length - done}</span></div>
+            ${[...by.entries()].map(([u, secs]) => `<div class="wsec"><label class="row small"><input type="checkbox" data-unit="${esc(B.bookId)}|${esc(u)}" ${secs.every((S) => st.on.has(B.bookId + '|' + S.sec)) ? 'checked' : ''}> <b>${esc(u)}</b></label>
+              <div style="padding-left:24px">${secs.map((S) => { const left = S.items.filter((x) => !x.done).length; return `<label class="row small"><input type="checkbox" data-sec="${esc(B.bookId)}|${esc(S.sec)}" ${st.on.has(B.bookId + '|' + S.sec) ? 'checked' : ''}> ${esc(S.label)} <span class="muted">· 남은 ${left} / ${S.items.length} (${S.items.map((x) => `<span style="${x.done ? 'text-decoration:line-through' : 'color:var(--red)'}">${esc(x.no)}</span>`).join(', ')})</span></label>`; }).join('')}</div></div>`).join('')}</div>`;
+        }).join('')}</div>
+        <div class="row between" style="margin-top:12px"><span class="small" id="nCount"></span><div class="row"><button class="ghost" data-a="close">닫기</button><button class="primary" id="nMake">오답노트 만들기</button></div></div></div>`);
+      const recount = () => { document.getElementById('nCount').textContent = `고른 문항 ${count()}개`; };
+      recount();
+      document.querySelectorAll('[data-sec]').forEach((cb) => cb.onchange = () => { cb.checked ? st.on.add(cb.dataset.sec) : st.on.delete(cb.dataset.sec); st.scope = ''; draw(); });
+      document.querySelectorAll('[data-unit]').forEach((cb) => cb.onchange = () => {
+        const [bid, u] = [cb.dataset.unit.slice(0, cb.dataset.unit.indexOf('|')), cb.dataset.unit.slice(cb.dataset.unit.indexOf('|') + 1)];
+        books.find((B) => B.bookId === bid).secs.filter((S) => S.unit === u).forEach((S) => (cb.checked ? st.on.add(bid + '|' + S.sec) : st.on.delete(bid + '|' + S.sec)));
+        st.scope = ''; draw();
+      });
+      document.getElementById('nRedo').onchange = (e) => { st.redo = e.target.checked; recount(); };
+      document.getElementById('nScope').onchange = (e) => {
+        st.scope = e.target.value; const sc = scopes.find((x) => x.id === st.scope);
+        if (sc) { st.on = new Set(); books.forEach((B) => B.secs.forEach((S) => { if ((sc.units || []).includes(S.unit)) st.on.add(B.bookId + '|' + S.sec); })); }
+        draw();
+      };
+      document.getElementById('nSaveScope').onclick = async () => {
+        const chosen = [...new Set(books.flatMap((B) => B.secs.filter((S) => st.on.has(B.bookId + '|' + S.sec)).map((S) => S.unit)))];
+        if (!chosen.length) return ctx.toast('범위로 저장할 단원을 먼저 고르세요.');
+        const name = prompt(`범위 이름을 적어 주세요.\n(예: 2학기 중간)\n\n단원: ${chosen.join(', ')}`, ''); if (!name) return;
+        const school = prompt('학교마다 범위가 다르면 학교 이름을 적어 주세요. (모든 학교 공통이면 비워 두기)', student.school || '') || '';
+        const d = { name: name.trim(), school: school.trim(), units: chosen, at: Date.now(), by: ctx.uid() };
+        const r = fs.doc(col('examScopes')); await fs.setDoc(r, d); scopes.unshift({ id: r.id, ...d }); st.scope = r.id; ctx.toast('시험 범위를 저장했습니다'); draw();
+      };
+      document.getElementById('nDelScope')?.addEventListener('click', async () => {
+        const sc = scopes.find((x) => x.id === st.scope); if (!sc || !confirm(`"${sc.name}" 범위를 지울까요?`)) return;
+        await fs.deleteDoc(ref('examScopes', sc.id)); scopes.splice(scopes.indexOf(sc), 1); st.scope = ''; draw();
+      });
+      document.getElementById('nMake').onclick = () => {
+        const wrongs = books.flatMap((B) => B.secs.filter((S) => st.on.has(B.bookId + '|' + S.sec)).flatMap((S) => S.items.filter((i) => st.redo || !i.done)));
+        if (!wrongs.length) return ctx.toast('고른 범위에 남은 문항이 없습니다. "다시 넣기"를 체크하면 이미 넣은 문항도 고를 수 있습니다.');
+        makeNote(student, wrongs, scopes.find((x) => x.id === st.scope)?.name || '').catch((e) => ctx.toast(e.message));
+      };
+    };
+    draw();
+  }
+
   // ---------- 1차 오답노트 ----------
-  async function makeNote(student, recordIds) {
-    const recs = (student.records || []).filter((r) => recordIds.includes(r.id));
-    const wrongs = []; const seen = new Set();
-    recs.forEach((r) => r.wrongs.forEach((w) => { const k = r.bookId + '|' + w.sec + '|' + normNo(w.no); if (!seen.has(k)) { seen.add(k); wrongs.push({ ...w, bookId: r.bookId, title: r.title }); } }));
-    if (!wrongs.length) return ctx.toast('고른 기록에 틀린 문항이 없습니다.');
+  async function makeNote(student, wrongs, scopeName = '') {
     const log = [];
     const show = (done, total, extra = '') => ctx.openModal(`<div class="wide"><h2>${esc(student.name)} · 1차 오답노트 만드는 중</h2>
       <div class="progress" style="margin:10px 0"><div style="width:${Math.round((done / total) * 100)}%"></div></div>
@@ -211,9 +327,11 @@ export function createWrong(ctx) {
       show(i + 1, wrongs.length, `· AI 사용 $${usd.toFixed(2)}`);
     }
     if (usd) await logUsage(usd);
-    const sheet = { id: 's' + Date.now().toString(36), kind: '1차', at: Date.now(), records: recordIds, count: out.length };
-    await saveStudent(student.id, { sheets: fs.arrayUnion(sheet) });
-    preview(student, out, fail, usd);
+    const sheet = { id: 's' + Date.now().toString(36), kind: '1차', at: Date.now(), scope: scopeName, count: out.length };
+    const fresh = (await fs.getDoc(ref('students', student.id))).data() || {};
+    const noted = { ...(fresh.noted || {}) }; out.forEach((x) => { noted[x.w.k || wkey(x.w.bookId, x.w.sec, x.w.no)] = sheet.id; });
+    await saveStudent(student.id, { sheets: fs.arrayUnion(sheet), noted });
+    preview(student, out, fail, usd, scopeName);
   }
 
   async function logUsage(usd) {
@@ -252,29 +370,29 @@ export function createWrong(ctx) {
     return c.toDataURL('image/jpeg', 0.85);
   }
 
-  function preview(student, out, fail, usd) {
+  function preview(student, out, fail, usd, scopeName = '') {
     ctx.openModal(`<div class="wide"><h2>${esc(student.name)} · 1차 오답노트 준비 완료</h2>
       <p class="small">문항 ${out.length}개${usd ? ` · 이번에 쓴 AI 비용 $${usd.toFixed(2)}` : ' · 모두 문항 은행에 있던 문항이라 AI 비용 없음'}</p>
       ${fail.length ? `<div class="card" style="background:var(--red-bg)"><b class="small">빠진 문항 ${fail.length}개</b><div class="small">${fail.map(esc).join('<br>')}</div></div>` : ''}
       <div class="row" style="margin-top:10px"><label class="small">한 쪽 문항 수</label><select id="nPer" style="width:auto"><option value="2">2문항</option><option value="4" selected>4문항</option><option value="6">6문항</option></select>
         <label class="small">표지</label><select id="nCover" style="width:auto"><option value="">없음</option><option value="classic">클래식</option><option value="insta">인스타 감성</option><option value="premium">프리미엄</option><option value="minimal">미니멀</option></select></div>
       <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="ghost" data-a="close">닫기</button><button class="ghost" id="nTeacher">선생님용 (출처 표시)</button><button class="primary" id="nStudent">학생용 미리보기 · 인쇄</button></div></div>`);
-    const go = (aud) => printDoc(buildDoc(student, out, aud, Number(document.getElementById('nPer').value), document.getElementById('nCover').value), { autoPrint: false }).catch((e) => ctx.toast(e.message));
+    const go = (aud) => printDoc(buildDoc(student, out, aud, Number(document.getElementById('nPer').value), document.getElementById('nCover').value, scopeName), { autoPrint: false }).catch((e) => ctx.toast(e.message));
     document.getElementById('nStudent').onclick = () => go('student');
     document.getElementById('nTeacher').onclick = () => go('teacher');
   }
 
-  function buildDoc(student, out, audience, perPage, cover) {
+  function buildDoc(student, out, audience, perPage, cover, scopeName = '') {
     const date = today();
     const byBook = [];
     out.forEach((x) => { let g = byBook.find((y) => y.title === x.w.title); if (!g) byBook.push(g = { title: x.w.title, xs: [] }); g.xs.push(x); });
     let n = 0;
     const sections = [];
-    if (cover) sections.push({ type: 'cover', preset: cover, kicker: 'WRONG NOTE · 1차 오답노트', title: `${student.name}\n오답노트`, subtitle: `${byBook.map((g) => g.title).join(' · ')} · ${date}` });
+    if (cover) sections.push({ type: 'cover', preset: cover, kicker: 'WRONG NOTE · 1차 오답노트', title: `${student.name}\n오답노트`, subtitle: `${scopeName ? scopeName + ' · ' : ''}${byBook.map((g) => g.title).join(' · ')} · ${date}` });
     const groups = [];
     for (const g of byBook) {
       const items = g.xs.map((x) => { n += 1; return { no: n, tag: `${shortLabel(x.w.label)} · ${x.w.no}번`, stem: x.it.stem, choices: x.it.choices, box: x.it.box, figure: x.it.figure, pts: x.it.pts, src: `${g.title} · ${x.w.label} ${x.w.no}번 · ${x.it.page}쪽${x.w.cause ? ' · 원인 ' + x.w.cause : ''}` }; });
-      sections.push({ type: 'sheet', chip: '1차 오답', kick: 'WRONG NOTE · 1차 오답노트', title: g.title, unit: `${student.name} · ${date} · ${items.length}문항`, perPage, items });
+      sections.push({ type: 'sheet', chip: '1차 오답', kick: 'WRONG NOTE · 1차 오답노트', title: g.title, unit: `${student.name} · ${scopeName ? scopeName + ' · ' : ''}${date} · ${items.length}문항`, perPage, items });
       groups.push({ title: g.title, nos: items.map((it) => it.no), rows: [{ label: '정답', vals: g.xs.map((x) => x.answer || '해설 참고') }] });
     }
     sections.push({ type: 'answers', groups });
@@ -282,5 +400,5 @@ export function createWrong(ctx) {
   }
   const shortLabel = (s) => String(s || '').replace(/\s*-\s*\d+\s*레벨/, '').replace(/^[^/]+\//, '');
 
-  return { entry, makeNote, catalog, bookOf };
+  return { entry, noteSetup, makeNote, removeBook, progress, catalog, bookOf };
 }

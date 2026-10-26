@@ -150,7 +150,7 @@ let WR = null;
 function wr() {
   WR ||= createWrong({
     db, aid: () => S.aid, ai, toast, openModal, closeModal, uid: () => S.user.uid,
-    fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, updateDoc, increment, arrayUnion },
+    fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, updateDoc, deleteDoc, increment, arrayUnion },
   });
   return WR;
 }
@@ -319,21 +319,19 @@ let catalogReady = false;
 function renderStudents() {
   const mine = S.role === 'owner' ? S.students : S.students.filter((s) => s.teacherUid === S.user.uid);
   if (!catalogReady) wr().catalog().then(() => { catalogReady = true; if (S.view === 'students' && !modal.open) render(); }).catch(() => {});
-  const used = (s) => new Set((s.sheets || []).flatMap((x) => x.records || []));
   main.innerHTML = `<div class="row between"><h2>학생</h2><button class="primary" data-a="newStudent">+ 학생 등록</button></div>
     ${mine.length ? '' : '<div class="empty">학생을 등록한 뒤 <b>오답 입력</b>을 누르세요. 교재는 오답 입력 화면에서 찾아 고르면 자동으로 이 학생 교재로 들어갑니다.</div>'}
     ${mine.map((s) => {
       const books = (s.catalogIds || []).map((id) => wr().bookOf(id)).filter(Boolean);
       const recs = [...(s.records || [])].sort((a, b) => b.at - a.at);
-      const u = used(s);
-      const total = recs.reduce((a, r) => a + r.wrongs.length, 0);
-      return `<div class="card"><div class="row between"><div><h3>${esc(s.name)}</h3><span class="muted small">${esc(s.grade || '')} ${esc(s.school || '')} · 기록 ${recs.length}건 · 오답 ${total}개</span></div>
-        <div class="row"><button class="primary small" data-a="wrongIn" data-id="${s.id}">+ 오답 입력</button><button class="ghost small" data-a="editStudent" data-id="${s.id}">수정</button></div></div>
-        <div class="row" style="margin-top:8px">${books.map((b) => `<span class="badge">${esc(b.title)}</span>`).join('') || (catalogReady ? '<span class="muted small">아직 고른 교재 없음</span>' : '')}</div>
-        ${recs.length ? `<div style="margin-top:8px" data-recs="${s.id}">${recs.slice(0, 12).map((r) => `<label class="rec"><input type="checkbox" value="${r.id}" ${u.has(r.id) ? '' : 'checked'}>
-          <span style="flex:1"><b>${new Date(r.at).toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' })}</b> · ${esc(r.title)} · ${esc(r.type || '')} · <span style="color:var(--red)">오답 ${r.wrongs.length}</span>${r.wrongs.length ? ` <span class="muted">(${esc(r.wrongs.slice(0, 8).map((w) => (w.label ? w.label.replace(/\s*-\s*\d+\s*레벨/, '').replace(/^[^/]+\//, '') + ' ' : '') + w.no).join(', '))}${r.wrongs.length > 8 ? ' …' : ''})</span>` : ''}${u.has(r.id) ? ' <span class="badge">오답노트 만듦</span>' : ''}</span>
-          <button class="ghost small danger" data-a="delRec" data-id="${s.id}" data-key="${r.id}" title="기록 지우기">×</button></label>`).join('')}</div>
-          <div class="row" style="margin-top:8px;justify-content:flex-end"><span class="muted small">체크한 기록으로</span><button class="primary small" data-a="makeNote" data-id="${s.id}">1차 오답노트 만들기</button></div>` : ''}
+      const prog = wr().progress(s);
+      const total = prog.reduce((a, p) => a + p.total, 0), done = prog.reduce((a, p) => a + p.done, 0);
+      return `<div class="card"><div class="row between"><div><h3>${esc(s.name)}</h3><span class="muted small">${esc(s.grade || '')} ${esc(s.school || '')} · 오답 ${total}개 · 오답노트 완료 ${done} · 남음 ${total - done}</span></div>
+        <div class="row"><button class="primary small" data-a="wrongIn" data-id="${s.id}">+ 오답 입력</button>${total ? `<button class="primary small" data-a="makeNote" data-id="${s.id}">오답노트 만들기</button>` : ''}<button class="ghost small" data-a="editStudent" data-id="${s.id}">수정</button></div></div>
+        <div class="row" style="margin-top:8px">${books.map((b) => `<span class="badge">${esc(b.title)} <button class="chipx" data-a="dropBook" data-id="${s.id}" data-key="${b.id}" title="이 학생 교재에서 빼기">×</button></span>`).join('') || (catalogReady ? '<span class="muted small">아직 고른 교재 없음</span>' : '')}</div>
+        ${prog.length ? `<div style="margin-top:8px">${prog.map((p) => `<div class="prog small"><span style="flex:1">${esc(p.title)}</span><span class="bar"><i style="width:${p.total ? Math.round((p.done / p.total) * 100) : 0}%"></i></span><span>${p.done}/${p.total}</span><span class="muted" style="flex:1.4">${p.left.length ? '남은 단원: ' + esc(p.left.join(', ')) : '모두 오답노트 완료'}</span></div>`).join('')}</div>` : ''}
+        ${recs.length ? `<details style="margin-top:6px"><summary class="small muted" style="cursor:pointer">입력 기록 ${recs.length}건</summary>${recs.map((r) => `<div class="rec"><span style="flex:1"><b>${new Date(r.at).toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' })}</b> · ${esc(r.title)} · ${esc(r.type || '')} · <span style="color:var(--red)">오답 ${r.wrongs.length}</span>${r.wrongs.length ? ` <span class="muted">(${esc(r.wrongs.slice(0, 10).map((w) => (w.label ? w.label.replace(/\s*-\s*\d+\s*레벨/, '').replace(/^[^/]+\//, '') + ' ' : '') + w.no).join(', '))}${r.wrongs.length > 10 ? ' …' : ''})</span>` : ''}</span>
+          <button class="ghost small danger" data-a="delRec" data-id="${s.id}" data-key="${r.id}" title="기록 지우기">×</button></div>`).join('')}</details>` : ''}
       </div>`;
     }).join('')}`;
 }
@@ -435,11 +433,8 @@ document.addEventListener('click', (e) => {
     newStudent: () => studentForm(),
     editStudent: () => studentForm(S.students.find((x) => x.id === id)),
     wrongIn: () => wr().entry(S.students.find((x) => x.id === id)).catch((er) => toast(er.message)),
-    makeNote: () => {
-      const ids = [...document.querySelectorAll(`[data-recs="${id}"] input:checked`)].map((c) => c.value);
-      if (!ids.length) return toast('오답노트로 만들 기록을 체크하세요.');
-      wr().makeNote(S.students.find((x) => x.id === id), ids).catch((er) => toast(er.message));
-    },
+    makeNote: () => wr().noteSetup(S.students.find((x) => x.id === id)).catch((er) => toast(er.message)),
+    dropBook: async () => { const st = S.students.find((x) => x.id === id); if (st && await wr().removeBook(st, key)) render(); },
     delRec: () => { e.preventDefault(); delRecord(id, key); },
     recheck: renderSettings,
     sample: () => printSample(b.dataset.aud).catch((er) => toast(er.message)),
