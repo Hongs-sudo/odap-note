@@ -30,9 +30,16 @@ function itemHTML(k, it, meta) {
     <div class="stem">${tex(k, it.stem)}${it.pts ? ` <span class="pts">[${it.pts}점]</span>` : ''}</div>${fig}${box}${ch}${it.qr ? `<div class="qr">${it.qr}</div>` : ''}</div>`;
 }
 
+// 양면 인쇄 규칙: 표지·문제·정답 및 해설 같은 '덩어리'는 늘 홀수 쪽(앞면)에서 시작
+// → 덩어리가 바뀌는 자리에 표시를 남기고, 배치가 끝난 뒤 앞 쪽 수가 홀수면 빈 쪽을 넣음 (layout.js)
+const PART = { cover: 'cover', sheet: 'q', answers: 'a', solutions: 'a', hand: 'h', catalog: 'cat' };
 export function buildBody(k, doc) {
+  let prev = null;
+  return (doc.sections || []).map((s) => { const part = PART[s.type] || s.type; const mark = prev && part !== prev ? `<i class="partmark" data-part="${part}"></i>` : ''; prev = part; return mark + sectionHTML(k, doc, s); }).join('');
+}
+function sectionHTML(k, doc, s) {
   const meta = doc.meta || {};
-  return (doc.sections || []).map((s) => {
+  return [s].map((s) => {
     if (s.type === 'sheet') return `<section class="sheet" data-per="${s.perPage || 4}" data-chip="${esc(s.chip)}" data-kick="${esc(s.kick || meta.kick)}" data-title="${esc(s.title || meta.title)}" data-unit="${esc(s.unit || meta.unit)}"><template class="items">${s.items.map((it) => itemHTML(k, it, meta)).join('')}</template></section>`;
     if (s.type === 'answers') {
       const g = s.groups.map((gr) => {
@@ -102,7 +109,7 @@ export async function printDoc(doc, { autoPrint = true, win = null } = {}) {
   const s = w.document.createElement('script'); s.src = BASE + 'layout.js'; w.document.body.appendChild(s);
   await new Promise((r) => (s.onload = r));
   const rep = w.__layout();
-  w.document.getElementById('info').textContent = `A4 ${rep.pages}쪽${rep.warnings.length ? ' · 확인 필요 ' + rep.warnings.length : ''} — 'PDF로 저장'을 고르면 PDF 파일이 됩니다`;
+  w.document.getElementById('info').textContent = `A4 ${rep.pages}쪽${rep.blanks ? ` (양면 인쇄용 빈 쪽 ${rep.blanks} 포함)` : ''}${rep.warnings.length ? ' · 확인 필요 ' + rep.warnings.length : ''} — 'PDF로 저장'을 고르면 PDF 파일이 됩니다`;
   if (autoPrint) setTimeout(() => w.print(), 400);
   return rep;
 }

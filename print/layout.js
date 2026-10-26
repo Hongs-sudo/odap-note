@@ -174,6 +174,12 @@ window.__layout = function () {
   document.querySelectorAll('section.handsec').forEach(layoutHand);
 
   // 쪽 번호
+  // 양면 인쇄: 덩어리(표지 → 문제 → 정답 및 해설)가 바뀌는 자리에서 앞 쪽 수가 홀수면 빈 쪽을 넣어 다음 덩어리를 홀수 쪽부터
+  let count = 0;
+  for (const n of [...document.body.children]) {
+    if (n.classList.contains('page')) count++;
+    else if (n.classList.contains('partmark')) { if (count % 2 === 1) { n.before(el('<div class="page blank"></div>')); count++; report.blanks = (report.blanks || 0) + 1; } n.remove(); }
+  }
   const numbered = [...document.querySelectorAll('.page')].filter((p) => p.querySelector('.pg, .hs-pg'));
   numbered.forEach((p, i) => { const g = p.querySelector('.pg'); if (g) g.textContent = `${i + 1} / ${numbered.length}`; const h = p.querySelector('.hs-pg'); if (h) h.textContent = i + 1; });
   // 표지의 작은 제목(교재명 등)도 같은 규칙으로

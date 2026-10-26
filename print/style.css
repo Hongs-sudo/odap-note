@@ -113,3 +113,7 @@ table.ans td:first-child { background: #FBF8F1; font-weight: 700; color: var(--g
 .hd > div:first-child { flex: 1; min-width: 0; }
 .hd h1 { white-space: nowrap; }
 .bar .unit { white-space: nowrap; }
+
+.partmark { display: none; }
+.page.blank { background: #fff; }
+@media screen { .page.blank::after { content: '빈 쪽 · 양면 인쇄 때 다음 내용이 앞면(홀수 쪽)에서 시작하도록 넣은 쪽'; margin: auto; font: 11pt 'Noto Sans KR', sans-serif; color: #a9b1ae; } }
