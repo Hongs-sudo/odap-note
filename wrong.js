@@ -3,7 +3,8 @@
 // - 문항 위치·정답은 PDF 글자층에서 읽고(무료), 문항 재타이핑만 AI를 씁니다. 한 번 타이핑한 쪽은 문항 은행에 저장돼 다시 쓰지 않습니다.
 import * as F from './folders.js';
 import { openPdf } from './analysis.js';
-import { readOutline, readAnswers, normNo } from './outline.js';
+import { readOutline, readAnswerBook, normNo } from './outline.js';
+import { cropProblem, cropRegions, toJpegBase64, pageJpegBase64 } from './crop.js';
 import { printDoc } from './print/print.js';
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -68,13 +69,13 @@ export function createWrong(ctx) {
 
   // 교재 구역(단원·회차)과 정답: 처음 한 번만 읽고 저장
   async function outlineOf(b, roots, onProgress) {
-    if (b.outline?.v === 1) return b.outline;
+    if (b.outline?.v === 2) return b.outline;
     const pdf = await openBookPdf(b, 'q', roots);
     if (!pdf) throw new Error('이 교재의 문제 PDF를 찾지 못했습니다.');
     const o = await readOutline(pdf, onProgress);
-    let ans = {};
-    try { const ap = await openBookPdf(b, 'a', roots); if (ap) ans = await readAnswers(ap, o.sections.map((s) => s.key)); } catch { /* 해설 없음 */ }
-    const outline = { v: 1, sections: o.sections, where: o.where, textPages: o.textPages, pages: o.pages, ans, at: Date.now() };
+    let ans = {}, sol = {};
+    try { const ap = await openBookPdf(b, 'a', roots); if (ap) ({ ans, sol } = await readAnswerBook(ap, o.sections.map((s) => s.key))); } catch { /* 해설 없음 */ }
+    const outline = { v: 2, sections: o.sections, where: o.where, textPages: o.textPages, pages: o.pages, ans, sol, at: Date.now() };
     await fs.setDoc(ref('catalogBooks', b.id), { outline }, { merge: true });
     b.outline = outline;
     return outline;
@@ -302,103 +303,242 @@ export function createWrong(ctx) {
     try { roots = await ensureFolders(); } catch (e) { return ctx.toast(e.message); }
     show(0, wrongs.length);
     await catalog();
-    const out = []; let usd = 0; const fail = [];
+    const t0 = Date.now(); const cost = { usd: 0 }; const rows = [];
     for (let i = 0; i < wrongs.length; i++) {
       const w = wrongs[i];
-      const b = bookOf(w.bookId);
-      try {
-        if (!b) throw new Error('교재 정보를 찾지 못했습니다');
-        const o = w.sec.startsWith('p') && !b.outline ? { sections: [], where: {}, ans: {} } : await outlineOf(b, roots);
-        const id = itemId(b.id, w.sec, w.no);
-        let snap = await fs.getDoc(ref('bankItems', id));
-        if (!snap.exists()) {
-          const page = w.page || o.where?.[w.sec + '|' + normNo(w.no)];
-          if (!page) throw new Error('문항 위치를 찾지 못했습니다');
-          log.push(`${b.title} ${page}쪽 타이핑 중…`); show(i, wrongs.length, `· AI 사용 $${usd.toFixed(2)}`);
-          usd += await retypePage(b, o, page, roots);
-          snap = await fs.getDoc(ref('bankItems', id));
-          if (!snap.exists() && o.pages && page < o.pages) { usd += await retypePage(b, o, page + 1, roots); snap = await fs.getDoc(ref('bankItems', id)); }
-          if (!snap.exists()) throw new Error(`${page}쪽에서 ${w.no}번을 읽지 못했습니다`);
-        }
-        const it = snap.data();
-        out.push({ w, it, answer: o.ans?.[w.sec + '|' + normNo(w.no)] || it.answer || '' });
-        log.push(`✓ ${w.label} ${w.no}번`);
-      } catch (e) { fail.push(`${w.title} · ${w.label} ${w.no}번 — ${e.message}`); log.push(`✗ ${w.label} ${w.no}번 — ${e.message}`); }
-      show(i + 1, wrongs.length, `· AI 사용 $${usd.toFixed(2)}`);
+      try { rows.push(await prepItem(w, roots, cost, (m) => { log.push(m); show(i, wrongs.length, `· AI 사용 $${cost.usd.toFixed(2)}`); })); log.push(`✓ ${w.label} ${w.no}번`); }
+      catch (e) { rows.push({ w, err: e.message }); log.push(`✗ ${w.label} ${w.no}번 — ${e.message}`); await queueRetry(w, e.message); }
+      show(i + 1, wrongs.length, `· AI 사용 $${cost.usd.toFixed(2)}`);
     }
-    if (usd) await logUsage(usd);
-    const sheet = { id: 's' + Date.now().toString(36), kind: '1차', at: Date.now(), scope: scopeName, count: out.length };
+    if (cost.usd) await logUsage(cost.usd);
+    const sheet = { id: 's' + Date.now().toString(36), kind: '1차', at: Date.now(), scope: scopeName, count: rows.filter((r) => !r.err).length };
     const fresh = (await fs.getDoc(ref('students', student.id))).data() || {};
-    const noted = { ...(fresh.noted || {}) }; out.forEach((x) => { noted[x.w.k || wkey(x.w.bookId, x.w.sec, x.w.no)] = sheet.id; });
+    const noted = { ...(fresh.noted || {}) }; rows.filter((r) => !r.err).forEach((x) => { noted[x.w.k || wkey(x.w.bookId, x.w.sec, x.w.no)] = sheet.id; });
     await saveStudent(student.id, { sheets: fs.arrayUnion(sheet), noted });
-    preview(student, out, fail, usd, scopeName);
+    review(student, rows, { usd: cost.usd, sec: Math.round((Date.now() - t0) / 1000), scopeName, roots, sheetId: sheet.id });
   }
 
   async function logUsage(usd) {
     await fs.setDoc(ref('aiUsage', new Date().toISOString().slice(0, 10)), { usd: fs.increment(usd), calls: fs.increment(1) }, { merge: true });
   }
+  // AI 호출: 일시 오류면 몇 초 쉬고 두 번 더 시도 (서버에서도 3번까지 다시 시도함)
+  async function aiCall(path, body) {
+    let last;
+    for (let i = 0; i < 3; i++) {
+      try { return await ctx.ai(path, body); } catch (e) {
+        last = e; if (!/not allowed|overload|과부하|429|5\d\d|timeout|network|fetch|Failed|요청 실패/i.test(e.message)) throw e;
+        if (i < 2) await new Promise((r) => setTimeout(r, [3000, 8000][i]));
+      }
+    }
+    throw last;
+  }
+  // 실패한 문항은 버리지 않고 대기 목록에 (새벽 분석이 이어서 처리, 화면에서 다시 시도 가능)
+  async function queueRetry(w, error) {
+    const id = 'item_' + itemId(w.bookId, w.sec, w.no);
+    await fs.setDoc(ref('analysisQueue', id), clean({ task: 'item', w: { bookId: w.bookId, title: w.title, sec: w.sec, label: w.label, no: w.no, page: w.page || null }, title: `${w.title} · ${w.label} ${w.no}번`, status: 'queued', priority: 0, error, createdAt: Date.now() }), { merge: true }).catch(() => {});
+  }
+  async function clearRetry(w) { await fs.updateDoc(ref('analysisQueue', 'item_' + itemId(w.bookId, w.sec, w.no)), { status: 'done', at: Date.now() }).catch(() => {}); }
 
-  // 한 쪽 재타이핑 → 문항 은행에 저장. 반환: 쓴 비용($)
+  const isScan = (o) => !o.sections?.length || (o.textPages || 0) < (o.pages || 1) * 0.3;
+
+  // 문항 하나 준비: ① 원본 잘라내기 ② (스캔본이면) AI 타이핑 ③ 해설지에서 해설 잘라내기 ④ 정답·해설이 없으면 AI 풀이
+  async function prepItem(w, roots, cost, say = () => {}) {
+    const b = bookOf(w.bookId); if (!b) throw new Error('교재 정보를 찾지 못했습니다');
+    const o = await outlineOf(b, roots);
+    const key = w.sec + '|' + normNo(w.no);
+    const r = ref('bankItems', itemId(b.id, w.sec, w.no));
+    let d = (await fs.getDoc(r)).data() || {};
+    const page = w.page || o.where?.[key] || d.page;
+    const up = {};
+    if (!d.crop && !isScan(o) && page) {
+      const c = await cropProblem(await openBookPdf(b, 'q', roots), page, w.no);
+      if (c) { up.crop = c; up.page = page; }
+    }
+    const segs = o.sol?.[key];
+    if (!d.sol && segs?.length) {
+      const ap = await openBookPdf(b, 'a', roots);
+      if (ap) { const c = await cropRegions(ap, segs); if (c) up.sol = c; }
+    }
+    if (!d.answer && o.ans?.[key]) up.answer = o.ans[key];
+    if (Object.keys(up).length) await fs.setDoc(r, clean({ ...up, bookId: b.id, sec: w.sec, no: w.no, nkey: normNo(w.no), status: d.status || 'review', at: d.at || Date.now() }), { merge: true });
+    d = { ...d, ...up };
+    if (!d.crop && !d.stem) {
+      if (!page) throw new Error('문항 위치를 찾지 못했습니다');
+      say(`${b.title} ${page}쪽 AI 타이핑 중… (원본을 잘라 쓸 수 없는 교재)`);
+      cost.usd += await retypePage(b, o, page, roots);
+      d = (await fs.getDoc(r)).data() || {};
+      if (!d.stem) throw new Error(`${page}쪽에서 ${w.no}번을 읽지 못했습니다`);
+    }
+    if (!d.sol && !d.answer && !d.aiSol) {
+      say(`${w.label} ${w.no}번 AI 정답·풀이 쓰는 중… (해설지 없음)`);
+      d.aiSol = await solve(b, d, r, cost);
+    }
+    return { w, it: d, scan: isScan(o), title: b.title };
+  }
+  async function solve(b, d, r, cost) {
+    const image = d.crop ? await toJpegBase64(d.crop.img) : null;
+    const res = await aiCall('/ai/solve', { title: b.title, image, item: d.stem ? { stem: d.stem, choices: d.choices, box: d.box } : null });
+    cost.usd += res.usage?.usd || 0;
+    const aiSol = clean({ answer: res.answer || '', solution: res.solution || '', key: res.key || '', check: res.check || null, at: Date.now() });
+    await fs.setDoc(r, { aiSol }, { merge: true });
+    return aiSol;
+  }
+  // 잘라낸 원본 → AI 타이핑 (원본이 흐릴 때)
+  async function typeOne(row, cost) {
+    const d = row.it; const r = ref('bankItems', itemId(row.w.bookId, row.w.sec, row.w.no));
+    if (!d.crop) throw new Error('원본 그림이 없습니다');
+    const res = await aiCall('/ai/retype1', { title: row.title, image: await toJpegBase64(d.crop.img) });
+    cost.usd += res.usage?.usd || 0;
+    const it = res.item || {};
+    let figure = it.figure || null;
+    if (figure?.needsRedraw && Array.isArray(figure.bbox)) figure = await subCrop(d.crop.img, figure.bbox);
+    else if (figure && !figure.svg) figure = null;
+    const ai = clean({ stem: it.stem || '', choices: it.choices || null, box: it.box || null, figure, pts: it.pts || null });
+    await fs.setDoc(r, { ...ai, source: 'retype1' }, { merge: true });
+    Object.assign(d, ai);
+  }
+  async function subCrop(dataUrl, [x0, y0, x1, y1]) {
+    const im = new Image(); im.src = dataUrl; await im.decode();
+    const W = im.width, H = im.height; const sx = Math.max(0, (x0 - 0.01) * W), sy = Math.max(0, (y0 - 0.01) * H);
+    const sw = Math.min(W, (x1 + 0.01) * W) - sx, sh = Math.min(H, (y1 + 0.01) * H) - sy;
+    const c = document.createElement('canvas'); c.width = sw; c.height = sh;
+    c.getContext('2d').drawImage(im, sx, sy, sw, sh, 0, 0, sw, sh);
+    return { img: c.toDataURL('image/png'), w: Math.round(sw), h: Math.round(sh) };
+  }
+  // 새벽 분석에서 실패 문항 이어서 처리
+  async function retryItem(t) {
+    await catalog();
+    const roots = await F.listRoots();
+    const cost = { usd: 0 };
+    await prepItem(t.w, roots, cost);
+    if (cost.usd) await logUsage(cost.usd);
+    return { kind: 'item' };
+  }
+
+  // 한 쪽 재타이핑 → 문항 은행에 저장 (스캔본용). 반환: 쓴 비용($)
   async function retypePage(b, o, page, roots) {
     const pdf = await openBookPdf(b, 'q', roots);
-    const pg = await pdf.getPage(page);
-    const vp1 = pg.getViewport({ scale: 1 });
-    const vp = pg.getViewport({ scale: 1300 / vp1.width });
-    const cv = document.createElement('canvas'); cv.width = vp.width; cv.height = vp.height;
-    await pg.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
-    const image = cv.toDataURL('image/jpeg', 0.82).split(',')[1];
-    const r = await ctx.ai('/ai/retype', { title: b.title, page, image });
+    const image = await pageJpegBase64(pdf, page);
+    const r = await aiCall('/ai/retype', { title: b.title, page, image });
     const secOf = (no) => { for (const s of o.sections || []) if (s.pages.includes(page) && s.nos.some((n) => normNo(n) === normNo(no))) return s.key; return (o.sections || []).find((s) => s.pages.includes(page))?.key || 'p' + page; };
     const batch = fs.writeBatch(db);
     for (const it of r.items || []) {
       const no = normNo(it.no); if (!no) continue;
       let figure = it.figure || null;
-      if (figure?.needsRedraw && Array.isArray(figure.bbox)) figure = { img: crop(cv, figure.bbox), crop: true };
+      if (figure?.needsRedraw && Array.isArray(figure.bbox)) figure = await subCrop('data:image/jpeg;base64,' + image, figure.bbox);
       else if (figure && !figure.svg) figure = null;
       const sec = secOf(it.no);
-      batch.set(ref('bankItems', itemId(b.id, sec, no)), clean({ bookId: b.id, sec, page, no: it.no, nkey: no, unit: it.unit || '', stem: it.stem || '', choices: it.choices || null, box: it.box || null, figure, answer: it.answer || '', pts: it.pts || null, status: 'review', source: 'retype', at: Date.now() }));
+      batch.set(ref('bankItems', itemId(b.id, sec, no)), clean({ bookId: b.id, sec, page, no: it.no, nkey: no, unit: it.unit || '', stem: it.stem || '', choices: it.choices || null, box: it.box || null, figure, pts: it.pts || null, status: 'review', source: 'retype', at: Date.now(), ...(it.answer ? { answerAI: it.answer } : {}) }), { merge: true });
     }
     batch.set(ref('catalogBooks', b.id), { retyped: { [page]: Date.now() } }, { merge: true });
     await batch.commit();
     return r.usage?.usd || 0;
   }
-  function crop(cv, [x0, y0, x1, y1]) {
-    const pad = 0.01; const W = cv.width, H = cv.height;
-    const sx = Math.max(0, (x0 - pad) * W), sy = Math.max(0, (y0 - pad) * H), sw = Math.min(W, (x1 + pad) * W) - sx, sh = Math.min(H, (y1 + pad) * H) - sy;
-    const k = Math.min(1, 700 / sw); const c = document.createElement('canvas'); c.width = sw * k; c.height = sh * k;
-    c.getContext('2d').drawImage(cv, sx, sy, sw, sh, 0, 0, c.width, c.height);
-    return c.toDataURL('image/jpeg', 0.85);
+
+  // ---------- 문항 확인 화면 ----------
+  function review(student, rows, info) {
+    rows.forEach((x) => { if (x.err) return; x.q ||= x.it.crop && !x.scan ? 'crop' : 'ai'; x.s ||= x.it.sol ? 'crop' : x.it.aiSol ? 'ai' : 'ans'; });
+    const cost = { usd: info.usd };
+    const busy = new Set();
+    const qView = (x) => x.q === 'crop' && x.it.crop ? `<img src="${x.it.crop.img}" class="thumb">` : `<div class="ttext">${esc(x.it.stem || '(AI 타이핑 전)')}${x.it.choices ? '<br>' + x.it.choices.map((c, i) => '①②③④⑤'[i] + ' ' + esc(c)).join('  ') : ''}${x.it.figure ? '<br><span class="muted">[그림]</span>' : ''}</div>`;
+    const sView = (x) => x.s === 'crop' && x.it.sol ? `<img src="${x.it.sol.img}" class="thumb">` : x.s === 'ai' && x.it.aiSol ? `<div class="ttext">${esc(x.it.aiSol.solution)}${x.it.aiSol.check && x.it.aiSol.check.match === false ? `<br><b style="color:var(--red)">GPT 답 ${esc(x.it.aiSol.check.gptAnswer)} — 확인 필요</b>` : ''}</div>` : '<div class="ttext muted">빠른 정답만 넣습니다</div>';
+    const ans = (x) => x.it.answer || x.it.aiSol?.answer || x.it.answerAI || '';
+    const draw = () => {
+      const ok = rows.filter((x) => !x.err), bad = rows.filter((x) => x.err);
+      const nAI = ok.filter((x) => x.q === 'ai').length + ok.filter((x) => x.s === 'ai').length;
+      ctx.openModal(`<div class="wide"><h2>${esc(student.name)} · 1차 오답노트 문항 확인</h2>
+        <p class="small muted">문항 ${ok.length}개 · 원본 잘라내기 ${ok.filter((x) => x.q === 'crop').length} · 해설지 ${ok.filter((x) => x.s === 'crop').length} · AI 사용 ${nAI}곳 ($${cost.usd.toFixed(2)}) · 걸린 시간 ${info.sec}초</p>
+        ${bad.length ? `<div class="card" style="background:var(--red-bg)"><div class="row between"><b class="small">빠진 문항 ${bad.length}개 — 다시 시도 대기에 넣어 두었습니다 (새벽 분석 때도 이어서 처리)</b><button class="primary small" id="rAll">빠진 문항 모두 다시 시도</button></div>${bad.map((x) => `<div class="row between small" style="border-top:1px solid #f0d0cd;padding:4px 0"><span>${esc(x.w.title)} · ${esc(x.w.label)} ${esc(x.w.no)}번 — ${esc(x.err)}</span><button class="ghost small" data-retry="${rows.indexOf(x)}" ${busy.has(x) ? 'disabled' : ''}>${busy.has(x) ? '다시 시도 중…' : '다시 시도'}</button></div>`).join('')}</div>` : ''}
+        <div class="row small" style="margin:6px 0"><span>한꺼번에:</span><button class="ghost small" data-bulk="crop">모두 원본</button><button class="ghost small" data-bulk="scan">흐린 것만 AI 타이핑</button><button class="ghost small" data-bulk="ai">모두 AI 타이핑</button></div>
+        <div style="max-height:52vh;overflow:auto">${ok.map((x, n) => { const i = rows.indexOf(x); return `<div class="rv">
+          <div class="rvn">${String(n + 1).padStart(2, '0')}</div>
+          <div><div class="lab">문제 · ${esc(shortLabel(x.w.label))} ${esc(x.w.no)}번${x.scan ? ' · <b style="color:#a8812f">스캔본</b>' : ''}</div>${qView(x)}</div>
+          <div><div class="lab">해설 · 정답 ${esc(ans(x)) || '-'}</div>${sView(x)}</div>
+          <div><div class="lab">문제</div><div class="seg"><button data-i="${i}" data-q="crop" class="${x.q === 'crop' ? 'on' : ''}" ${x.it.crop ? '' : 'disabled'}>원본 그대로</button><button data-i="${i}" data-q="ai" class="${x.q === 'ai' ? 'on' : ''}">AI 타이핑</button></div>
+            <div class="lab" style="margin-top:8px">해설</div><div class="seg"><button data-i="${i}" data-s="crop" class="${x.s === 'crop' ? 'on' : ''}" ${x.it.sol ? '' : 'disabled'}>해설지</button><button data-i="${i}" data-s="ai" class="${x.s === 'ai' ? 'on' : ''}">AI 풀이</button></div>
+            ${busy.has(x) ? '<div class="warn">AI 작업 중…</div>' : ''}</div></div>`; }).join('')}</div>
+        <div class="row" style="margin-top:10px"><label class="small">한 쪽 문항 수</label><select id="nPer" style="width:auto"><option value="2">2문항</option><option value="4" selected>4문항</option><option value="6">6문항</option></select>
+          <label class="small">표지</label><select id="nCover" style="width:auto"><option value="">없음</option><option value="classic">클래식</option><option value="insta">인스타 감성</option><option value="premium">프리미엄</option><option value="minimal">미니멀</option></select>
+          <label class="small row"><input type="checkbox" id="nSol" checked> 정답 및 해설 쪽 넣기</label></div>
+        <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="ghost" data-a="close">닫기</button><button class="ghost" id="nTeacher">선생님용 (출처 표시)</button><button class="primary" id="nStudent">학생용 미리보기 · 인쇄</button></div></div>`);
+      const keep = { per: document.getElementById('nPer'), cover: document.getElementById('nCover'), sol: document.getElementById('nSol') };
+      Object.entries(prefs).forEach(([k, v]) => { if (keep[k]) keep[k][k === 'sol' ? 'checked' : 'value'] = v; });
+      Object.entries(keep).forEach(([k, el]) => el.onchange = () => { prefs[k] = k === 'sol' ? el.checked : el.value; });
+      const go = (aud) => printDoc(buildDoc(student, rows.filter((x) => !x.err), aud, Number(keep.per.value), keep.cover.value, info.scopeName, keep.sol.checked), { autoPrint: false }).catch((e) => ctx.toast(e.message));
+      document.getElementById('nStudent').onclick = () => go('student');
+      document.getElementById('nTeacher').onclick = () => go('teacher');
+      document.querySelectorAll('[data-q],[data-s]').forEach((btn) => btn.onclick = () => setMode(rows[btn.dataset.i], btn.dataset.q ? 'q' : 's', btn.dataset.q || btn.dataset.s));
+      document.querySelectorAll('[data-retry]').forEach((btn) => btn.onclick = () => retry([rows[btn.dataset.retry]]));
+      document.getElementById('rAll')?.addEventListener('click', () => retry(rows.filter((x) => x.err)));
+      document.querySelectorAll('[data-bulk]').forEach((btn) => btn.onclick = async () => {
+        const m = btn.dataset.bulk;
+        for (const x of rows.filter((y) => !y.err)) {
+          if (m === 'crop' && x.it.crop) x.q = 'crop';
+          else if (m === 'scan') { if (x.scan) await setMode(x, 'q', 'ai', true); else if (x.it.crop) x.q = 'crop'; }
+          else if (m === 'ai') await setMode(x, 'q', 'ai', true);
+        }
+        draw();
+      });
+    };
+    const prefs = {};
+    async function setMode(x, kind, mode, quiet) {
+      const before = cost.usd;
+      try {
+        if (kind === 'q' && mode === 'ai' && !x.it.stem) { busy.add(x); if (!quiet) draw(); await typeOne(x, cost); }
+        if (kind === 's' && mode === 'ai' && !x.it.aiSol) { busy.add(x); if (!quiet) draw(); const b = bookOf(x.w.bookId); x.it.aiSol = await solve(b, x.it, ref('bankItems', itemId(x.w.bookId, x.w.sec, x.w.no)), cost); }
+        x[kind] = mode;
+      } catch (e) { ctx.toast(`AI 작업 실패: ${e.message} — 잠시 뒤 다시 눌러 주세요`); }
+      busy.delete(x);
+      if (cost.usd > before) await logUsage(cost.usd - before).catch(() => {});
+      if (!quiet) draw();
+    }
+    async function retry(list) {
+      const before = cost.usd;
+      list.forEach((x) => busy.add(x)); draw();
+      for (const x of list) {
+        try { const r = await prepItem(x.w, info.roots, cost); Object.assign(x, r, { err: null }); x.q = x.it.crop && !x.scan ? 'crop' : 'ai'; x.s = x.it.sol ? 'crop' : x.it.aiSol ? 'ai' : 'ans'; await clearRetry(x.w); }
+        catch (e) { x.err = e.message; }
+        busy.delete(x); draw();
+      }
+      if (cost.usd > before) await logUsage(cost.usd - before).catch(() => {});
+      // 이번 오답노트에 들어간 문항으로 표시
+      const fresh = (await fs.getDoc(ref('students', student.id))).data() || {};
+      const noted = { ...(fresh.noted || {}) }; rows.filter((x) => !x.err).forEach((x) => { noted[x.w.k || wkey(x.w.bookId, x.w.sec, x.w.no)] ||= info.sheetId; });
+      await saveStudent(student.id, { noted });
+    }
+    draw();
   }
 
-  function preview(student, out, fail, usd, scopeName = '') {
-    ctx.openModal(`<div class="wide"><h2>${esc(student.name)} · 1차 오답노트 준비 완료</h2>
-      <p class="small">문항 ${out.length}개${usd ? ` · 이번에 쓴 AI 비용 $${usd.toFixed(2)}` : ' · 모두 문항 은행에 있던 문항이라 AI 비용 없음'}</p>
-      ${fail.length ? `<div class="card" style="background:var(--red-bg)"><b class="small">빠진 문항 ${fail.length}개</b><div class="small">${fail.map(esc).join('<br>')}</div></div>` : ''}
-      <div class="row" style="margin-top:10px"><label class="small">한 쪽 문항 수</label><select id="nPer" style="width:auto"><option value="2">2문항</option><option value="4" selected>4문항</option><option value="6">6문항</option></select>
-        <label class="small">표지</label><select id="nCover" style="width:auto"><option value="">없음</option><option value="classic">클래식</option><option value="insta">인스타 감성</option><option value="premium">프리미엄</option><option value="minimal">미니멀</option></select></div>
-      <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="ghost" data-a="close">닫기</button><button class="ghost" id="nTeacher">선생님용 (출처 표시)</button><button class="primary" id="nStudent">학생용 미리보기 · 인쇄</button></div></div>`);
-    const go = (aud) => printDoc(buildDoc(student, out, aud, Number(document.getElementById('nPer').value), document.getElementById('nCover').value, scopeName), { autoPrint: false }).catch((e) => ctx.toast(e.message));
-    document.getElementById('nStudent').onclick = () => go('student');
-    document.getElementById('nTeacher').onclick = () => go('teacher');
-  }
-
-  function buildDoc(student, out, audience, perPage, cover, scopeName = '') {
+  function buildDoc(student, rows, audience, perPage, cover, scopeName = '', withSol = true) {
     const date = today();
     const byBook = [];
-    out.forEach((x) => { let g = byBook.find((y) => y.title === x.w.title); if (!g) byBook.push(g = { title: x.w.title, xs: [] }); g.xs.push(x); });
+    rows.forEach((x) => { let g = byBook.find((y) => y.title === x.w.title); if (!g) byBook.push(g = { title: x.w.title, xs: [] }); g.xs.push(x); });
     let n = 0;
     const sections = [];
     if (cover) sections.push({ type: 'cover', preset: cover, kicker: 'WRONG NOTE · 1차 오답노트', title: `${student.name}\n오답노트`, subtitle: `${scopeName ? scopeName + ' · ' : ''}${byBook.map((g) => g.title).join(' · ')} · ${date}` });
-    const groups = [];
+    const groups = []; const sols = [];
     for (const g of byBook) {
-      const items = g.xs.map((x) => { n += 1; return { no: n, tag: `${shortLabel(x.w.label)} · ${x.w.no}번`, stem: x.it.stem, choices: x.it.choices, box: x.it.box, figure: x.it.figure, pts: x.it.pts, src: `${g.title} · ${x.w.label} ${x.w.no}번 · ${x.it.page}쪽${x.w.cause ? ' · 원인 ' + x.w.cause : ''}` }; });
+      const items = g.xs.map((x) => {
+        n += 1; x.n = n;
+        const it = x.it; const chk = it.aiSol?.check;
+        const src = `${g.title} · ${x.w.label} ${x.w.no}번 · ${it.page || x.w.page || ''}쪽${x.w.cause ? ' · 원인 ' + x.w.cause : ''}${x.q === 'ai' ? ' · AI 타이핑' : ''}${x.s === 'ai' && chk?.match === false ? ' · GPT 답 ' + chk.gptAnswer + ' 확인 필요' : ''}`;
+        const base = { no: n, tag: `${shortLabel(x.w.label)} · ${x.w.no}번`, src };
+        return x.q === 'crop' && it.crop ? { ...base, stem: '', figure: { img: it.crop.img, w: it.crop.w, h: it.crop.h, crop: true } }
+          : { ...base, stem: it.stem, choices: it.choices, box: it.box, figure: it.figure, pts: it.pts };
+      });
       sections.push({ type: 'sheet', chip: '1차 오답', kick: 'WRONG NOTE · 1차 오답노트', title: g.title, unit: `${student.name} · ${scopeName ? scopeName + ' · ' : ''}${date} · ${items.length}문항`, perPage, items });
-      groups.push({ title: g.title, nos: items.map((it) => it.no), rows: [{ label: '정답', vals: g.xs.map((x) => x.answer || '해설 참고') }] });
+      groups.push({ title: g.title, nos: items.map((it) => it.no), rows: [{ label: '정답', vals: g.xs.map((x) => x.it.answer || x.it.aiSol?.answer || x.it.answerAI || '해설 참고') }] });
+      g.xs.forEach((x) => {
+        const answer = x.it.answer || x.it.aiSol?.answer || x.it.answerAI || '';
+        if (x.s === 'crop' && x.it.sol) sols.push({ no: x.n, answer, tag: shortLabel(x.w.label) + ' · ' + x.w.no + '번', text: `<img class="crop" src="${x.it.sol.img}" width="${x.it.sol.w}" height="${x.it.sol.h}" style="width:${(x.it.sol.w / 200 * 25.4).toFixed(1)}mm">` });
+        else if (x.s === 'ai' && x.it.aiSol) sols.push({ no: x.n, answer, tag: shortLabel(x.w.label) + ' · ' + x.w.no + '번 · AI 풀이', text: x.it.aiSol.solution, key: x.it.aiSol.key });
+      });
     }
     sections.push({ type: 'answers', groups });
+    if (withSol && sols.length) sections.push({ type: 'solutions', items: sols });
     return { meta: { title: `${student.name} 1차 오답노트`, kick: 'WRONG NOTE · 1차 오답노트', grade: student.grade || '', footer: `${student.name} · 1차 오답노트`, audience }, sections };
   }
   const shortLabel = (s) => String(s || '').replace(/\s*-\s*\d+\s*레벨/, '').replace(/^[^/]+\//, '');
 
-  return { entry, noteSetup, makeNote, removeBook, progress, catalog, bookOf };
+  return { entry, noteSetup, makeNote, removeBook, progress, catalog, bookOf, retryItem };
 }

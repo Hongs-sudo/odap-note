@@ -105,3 +105,7 @@ table.ans td:first-child { background: #FBF8F1; font-weight: 700; color: var(--g
 .hs-steps .katex .mclose, .hs-steps .katex .mpunct, .hs-steps .katex .mathrm, .hs-steps .katex .mop,
 .hs-ans .katex .mord:not(.mathnormal), .hs-ans .katex .mrel, .hs-ans .katex .mbin { font-family: 'Gaegu', cursive !important; font-size: 1.12em; }
 .hs-steps .katex .mathnormal, .hs-ans .katex .mathnormal { font-size: 1.02em; }
+
+.q .fig.crop { margin: 1mm 0 0; text-align: left; }
+.q .fig.crop img { max-width: 100%; height: auto; max-height: none; }
+.sol img.crop { max-width: 100%; height: auto; display: block; margin-top: 1mm; }

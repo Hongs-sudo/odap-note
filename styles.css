@@ -65,3 +65,13 @@ textarea{font:inherit;padding:9px 11px;border:1px solid var(--line);border-radiu
 .prog{display:flex;gap:8px;align-items:center;border-top:1px solid var(--line);padding:5px 0}
 .prog .bar{width:90px;height:6px;background:var(--line);border-radius:3px;overflow:hidden;flex:none}
 .prog .bar i{display:block;height:100%;background:var(--green)}
+.rv{display:grid;grid-template-columns:30px 1fr 1fr 170px;gap:10px;border-top:1px solid var(--line);padding:10px 0;align-items:start}
+.rvn{font-weight:700;font-size:18px;color:var(--green)}
+.rv .lab{font-size:12px;color:var(--sub);margin-bottom:3px}
+.rv .thumb{width:100%;max-height:190px;object-fit:contain;object-position:left top;border:1px solid var(--line);border-radius:6px;background:#fff}
+.rv .ttext{font-size:12px;border:1px solid var(--line);border-radius:6px;padding:6px;max-height:190px;overflow:auto;white-space:pre-wrap}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{flex:1;border:0;background:#fff;padding:6px 0;font-size:12px;cursor:pointer}
+.seg button.on{background:var(--green);color:#fff}
+.seg button:disabled{color:#bbb;cursor:default}
+.warn{font-size:11px;color:#7a5c17;background:var(--gold-bg);border-radius:6px;padding:3px 6px;margin-top:6px}

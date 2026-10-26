@@ -16,7 +16,10 @@ function tex(k, s) {
 
 function itemHTML(k, it, meta) {
   const teacher = meta.audience === 'teacher';
-  const fig = it.figure ? `<div class="fig${it.figure.pending ? ' pending' : ''}">${it.figure.svg || `<img src="${it.figure.img}">`}</div>` : '';
+  // crop: 원본에서 잘라낸 문항 그림 → 원래 크기(200dpi 기준 mm)로, 칸보다 크면 칸에 맞춤
+  const f = it.figure;
+  const dim = f?.w ? ` width="${f.w}" height="${f.h}"${f.crop ? ` style="width:${(f.w / 200 * 25.4).toFixed(1)}mm"` : ''}` : '';
+  const fig = f ? `<div class="fig${f.pending ? ' pending' : ''}${f.crop ? ' crop' : ''}">${f.svg || `<img src="${f.img}"${dim}>`}</div>` : '';
   const box = it.box ? `<div class="box"><span class="bt">${esc(it.box.title || '보기')}</span>${it.box.lines.map((l) => tex(k, l)).join('<br>')}</div>` : '';
   let ch = '';
   if (it.choices?.length) {

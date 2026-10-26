@@ -13,13 +13,16 @@ export async function pageText(pdf, n) {
   const page = await pdf.getPage(n);
   const vp = page.getViewport({ scale: 1 });
   const tc = await page.getTextContent();
-  const items = tc.items.filter((it) => it.str && it.str.trim()).map((it) => ({
+  const raw = tc.items.filter((it) => it.str && it.str.trim()).map((it) => ({
     s: it.str, x: it.transform[4], y: vp.height - it.transform[5], h: Math.abs(it.transform[3]) || it.height || 0, w: it.width || 0,
   }));
+  // 굵게 보이려고 같은 글자를 같은 자리에 두 번 찍은 교재가 있어 겹친 조각은 하나만 남김
+  const items = [];
+  for (const it of raw) if (!items.some((o) => o.s === it.s && Math.abs(o.x - it.x) < 0.6 && Math.abs(o.y - it.y) < 0.6)) items.push(it);
   return { W: vp.width, H: vp.height, items };
 }
 
-function lines(items, W, split = true) {
+export function lines(items, W, split = true) {
   const cols = split ? [items.filter((i) => i.x < W * 0.5), items.filter((i) => i.x >= W * 0.5)] : [items];
   const out = [];
   cols.forEach((arr, c) => {
@@ -88,33 +91,66 @@ export async function readOutline(pdf, onProgress) {
   return { sections: sections.filter((s) => s.nos.length), where, textPages, pages: pdf.numPages };
 }
 
-// 해설 PDF → 정답 { 구역키|번호: 답 }
+// 해설 PDF → { ans: {구역키|번호: 정답}, sol: {구역키|번호: [잘라낼 영역…]} }
 // 1) 빠른정답 표  2) 그래도 빠진 번호는 상세 해설의 "01 정답 ④" 줄에서 보충
+// sol: 상세 해설에서 그 문항 해설이 차지하는 영역(다음 단·쪽으로 이어지면 여러 조각)
 // keys: 문제 PDF에서 읽은 구역 키 목록 (제목 줄을 알아보는 데 씀)
-export async function readAnswers(pdf, keys = []) {
+export async function readAnswerBook(pdf, keys = []) {
   const known = new Set(keys);
   const headOf = (t) => { const m = t.match(HEAD); if (m) return normKey(m[0]); const k = normKey(cleanLabel(t)); if (known.has(k)) return k; if (/^\S+\/\S/.test(t) && !/\d\s*\/\s*\d/.test(t)) return k; return null; };
-  const quick = {}, detail = {};
-  let secQ = null, secD = null;
+  const quick = {}, detail = {}, sol = {};
+  let secQ = null, secD = null, open = null;
+  const close = () => { if (open && open.segs.length) sol[open.k] = open.segs; open = null; };
   for (let p = 1; p <= pdf.numPages; p++) {
     const pt = await pageText(pdf, p);
     const ls = lines(pt.items, pt.W, true);
     const isQuick = ls.some((l) => /빠른\s*정답/.test(l.text));
-    for (const l of ls) {
-      if (/^(빠른\s*정답|정답과\s*해설)$/.test(l.text)) continue;
-      const h = headOf(l.text);
-      if (h) { if (isQuick) secQ = h; else secD = h; continue; }
-      if (isQuick) {
+    if (isQuick) {
+      for (const l of ls) {
+        if (/^(빠른\s*정답|정답과\s*해설)$/.test(l.text)) continue;
+        const h = headOf(l.text); if (h) { secQ = h; continue; }
         if (!secQ) continue;
         parsePairs(l.items.map((i) => i.s.trim()).filter(Boolean)).forEach(([no, ans]) => { const k = secQ + '|' + normNo(no); if (!(k in quick)) quick[k] = ans; });
-      } else if (secD) {
-        const m = l.text.match(/^(\d{1,3})\s*정답\s*(.+)$/);
-        if (m) { const k = secD + '|' + normNo(m[1]); if (!(k in detail)) detail[k] = m[2].replace(/\s*\/\s*/g, '/').trim(); }
       }
+      continue;
+    }
+    const { W, H } = pt;
+    for (const c of [0, 1]) {
+      const body = ls.filter((l) => l.col === c && l.y > H * 0.075 && l.y < H * 0.93);
+      if (!body.length) continue;
+      const its = body.flatMap((l) => l.items);
+      const x0 = Math.min(...its.map((i) => i.x)) - 3;
+      const other = ls.filter((l) => l.col === 1 && l.y > H * 0.075 && l.y < H * 0.93).flatMap((l) => l.items);
+      const x1 = c === 0 ? (other.length ? Math.min(...other.map((i) => i.x)) - 6 : W / 2) : W - 12; // 수식이 그림으로 들어간 교재가 있어 글자 끝 대신 쪽 끝까지 (여백은 잘라 낼 때 정리)
+      const top = Math.min(...body.map((l) => l.y - (l.items[0].h || 10))) - 2;
+      const foot = ls.filter((l) => l.y >= H * 0.93).map((l) => l.y - (l.items[0].h || 10));
+      const bottom = (foot.length ? Math.min(...foot) : H * 0.95) - 3;
+      const marks = [];
+      for (const l of body) {
+        const h = headOf(l.text);
+        if (h) { marks.push({ type: 'head', k: h, top: l.y - (l.items[0].h || 10) - 2 }); continue; }
+        const m = l.text.match(/^(\d{1,3})\s*정답\s*(.*)$/);
+        if (m) marks.push({ type: 'sol', no: m[1], ans: m[2], base: l.y, top: l.y - (l.items[0].h || 10) - 2 });
+      }
+      marks.sort((a, b) => a.top - b.top);
+      // 앞 단·쪽에서 이어지는 해설
+      const firstTop = marks.length ? marks[0].top : bottom;
+      if (open && firstTop - top > 12 && open.segs.length < 3) open.segs.push({ p, x0, x1, y0: top, y1: firstTop - 2 });
+      marks.forEach((mk, i) => {
+        const next = marks[i + 1]?.top ?? bottom;
+        if (mk.type === 'head') { close(); secD = mk.k; return; }
+        close();
+        if (!secD) return;
+        const k = secD + '|' + normNo(mk.no);
+        if (mk.ans && !(k in detail)) detail[k] = mk.ans.replace(/\s*\/\s*/g, '/').trim();
+        open = { k, segs: [{ p, x0, x1, y0: mk.base + 2, y1: next - 2 }] };
+      });
     }
   }
-  return { ...detail, ...quick };
+  close();
+  return { ans: { ...detail, ...quick }, sol };
 }
+export async function readAnswers(pdf, keys = []) { return (await readAnswerBook(pdf, keys)).ans; }
 // "1 28 2 115 3 ①, ③ 4 58 / 5" → [[1,'28'],[2,'115'],[3,'①, ③'],[4,'58 / 5']]
 function parsePairs(toks) {
   const res = []; let i = 0;

@@ -172,6 +172,8 @@ export function createLibrary(ctx) {
         const s = await fs.getDocs(fs.query(col('analysisQueue'), fs.where('status', '==', 'queued'), fs.where('priority', '==', p), fs.limit(30)));
         for (const x of [...s.docs].sort((a, b) => (a.data().createdAt || 0) - (b.data().createdAt || 0))) {
           const t = x.data(); const m = st.meta[t.bookId];
+          // 오답노트에서 빠진 문항 다시 시도
+          if (t.task === 'item') { if (!ctx.itemTask) continue; return { id: x.id, ref: x.ref, title: t.title, task: t, run: ctx.itemTask(t) }; }
           // 학교 시험지로 다시 분류됐거나 이미 단원 수가 있는 교재는 건너뜀
           if (t.task === 'toc' && (m?.kind === '기출·시험지' || isExam(t.title) || m?.units)) { await fs.updateDoc(x.ref, { status: 'skipped' }); continue; }
           const r = st.roots.find((rr) => rr.label === t.label);
@@ -186,6 +188,7 @@ export function createLibrary(ctx) {
     },
     saveResult: async (task, res) => {
       if (res.error) { await fs.updateDoc(task.ref, { status: 'error', error: res.error, at: Date.now() }); return; }
+      if (res.kind === 'item') { await fs.updateDoc(task.ref, { status: 'done', at: Date.now() }); return; }
       if (res.kind === 'toc') {
         await fs.setDoc(ref('catalogBooks', task.task.bookId), { units: res.count, toc: res.units, unitsSource: 'ai', unitsAt: Date.now() }, { merge: true });
         await fs.updateDoc(task.ref, { status: 'done', at: Date.now(), count: res.count });

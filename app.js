@@ -142,6 +142,7 @@ let LIB = null;
 function lib() {
   LIB ||= createLibrary({
     main: () => main, toast, db, aid: () => S.aid, api: ai, openModal, closeModal,
+    itemTask: (t) => async () => wr().retryItem(t),
     fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, query, where, orderBy, limit, updateDoc, increment },
   });
   return LIB;
