@@ -80,11 +80,11 @@ function loadKatex() {
 }
 
 // 새 창에서 배치 후 인쇄. 반환: 배치 결과(쪽 수, 경고)
-export async function printDoc(doc, { autoPrint = true } = {}) {
+export async function printDoc(doc, { autoPrint = true, win = null } = {}) {
   // 버튼을 누른 순간에 창부터 열어야 팝업 차단에 걸리지 않음
-  const w = window.open('', '_blank');
+  const w = win || window.open('', '_blank');
   if (!w) throw new Error('팝업이 막혀 있습니다. 주소창 오른쪽에서 팝업을 허용해 주세요.');
-  w.document.write('<p style="font:15px sans-serif;padding:24px">A4로 배치하는 중…</p>');
+  if (!win) w.document.write('<p style="font:15px sans-serif;padding:24px">A4로 배치하는 중…</p>');
   const k = await loadKatex();
   w.document.open();
   const meta = doc.meta || {};

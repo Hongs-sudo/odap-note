@@ -311,11 +311,65 @@ export function createWrong(ctx) {
       show(i + 1, wrongs.length, `· AI 사용 $${cost.usd.toFixed(2)}`);
     }
     if (cost.usd) await logUsage(cost.usd);
-    const sheet = { id: 's' + Date.now().toString(36), kind: '1차', at: Date.now(), scope: scopeName, count: rows.filter((r) => !r.err).length };
+    rows.forEach((x) => { if (!x.err) { x.q = x.it.crop && !x.scan ? 'crop' : 'ai'; x.s = x.it.sol ? 'crop' : x.it.aiSol ? 'ai' : 'ans'; } });
+    const sheet = clean({ id: 's' + Date.now().toString(36), kind: '1차', at: Date.now(), scope: scopeName, count: rows.filter((r) => !r.err).length, books: [...new Set(rows.map((r) => r.w.title))], items: sheetItems(rows), opts: { per: 4, cover: '', sol: true } });
     const fresh = (await fs.getDoc(ref('students', student.id))).data() || {};
     const noted = { ...(fresh.noted || {}) }; rows.filter((r) => !r.err).forEach((x) => { noted[x.w.k || wkey(x.w.bookId, x.w.sec, x.w.no)] = sheet.id; });
     await saveStudent(student.id, { sheets: fs.arrayUnion(sheet), noted });
-    review(student, rows, { usd: cost.usd, sec: Math.round((Date.now() - t0) / 1000), scopeName, roots, sheetId: sheet.id });
+    review(student, rows, { usd: cost.usd, sec: Math.round((Date.now() - t0) / 1000), scopeName, roots, sheetId: sheet.id, opts: sheet.opts });
+  }
+
+  // ---------- 만든 오답노트 다시 보기 ----------
+  const sheetItems = (rows) => rows.filter((x) => !x.err).map((x) => clean({ bookId: x.w.bookId, title: x.w.title, sec: x.w.sec, label: x.w.label, no: x.w.no, page: x.w.page || x.it.page || null, cause: x.w.cause || null, q: x.q, s: x.s }));
+  async function updateSheet(sid, id, patch) {
+    const fresh = (await fs.getDoc(ref('students', sid))).data() || {};
+    const sheets = (fresh.sheets || []).map((x) => (x.id === id ? clean({ ...x, ...patch }) : x));
+    await saveStudent(sid, { sheets });
+  }
+  // 저장해 둔 문항 목록 → 문항 은행에서 불러와 확인 화면·출력용 rows로
+  async function loadSheet(student, id) {
+    const sh = (student.sheets || []).find((x) => x.id === id);
+    if (!sh?.items?.length) throw new Error('문항 목록이 저장되지 않은 오답노트입니다 (이전 버전). 오답노트 만들기에서 "다시 넣기"로 다시 만들어 주세요.');
+    const rows = [];
+    for (const w of sh.items) {
+      const snap = await fs.getDoc(ref('bankItems', itemId(w.bookId, w.sec, w.no)));
+      if (!snap.exists()) { rows.push({ w, err: '문항 은행에서 찾지 못했습니다' }); continue; }
+      const it = snap.data();
+      const q = w.q === 'crop' && it.crop ? 'crop' : it.stem ? 'ai' : it.crop ? 'crop' : 'ai';
+      const s = w.s === 'crop' && it.sol ? 'crop' : w.s === 'ai' && it.aiSol ? 'ai' : it.sol ? 'crop' : it.aiSol ? 'ai' : 'ans';
+      rows.push({ w, it, q, s, title: w.title, scan: !it.crop });
+    }
+    return { sh, rows };
+  }
+  // 학생 카드의 [학생용]/[선생님용]: 버튼을 누른 순간 창을 먼저 열어 팝업 차단을 피함
+  async function printSheet(student, id, audience) {
+    const win = window.open('', '_blank');
+    if (!win) return ctx.toast('팝업이 막혀 있습니다. 주소창 오른쪽에서 팝업을 허용해 주세요.');
+    win.document.write('<p style="font:15px sans-serif;padding:24px">오답노트 불러오는 중…</p>');
+    try {
+      const { sh, rows } = await loadSheet(student, id);
+      const ok = rows.filter((x) => !x.err);
+      const o = sh.opts || {};
+      await printDoc(buildDoc(student, ok, audience, Number(o.per || 4), o.cover || '', sh.scope || '', o.sol !== false), { autoPrint: false, win });
+      if (ok.length < rows.length) ctx.toast(`${rows.length - ok.length}문항은 문항 은행에서 찾지 못해 빠졌습니다`);
+    } catch (e) { win.close(); ctx.toast(e.message); }
+  }
+  async function editSheet(student, id) {
+    ctx.openModal('<p class="pad center">불러오는 중…</p>');
+    try {
+      const { sh, rows } = await loadSheet(student, id);
+      await catalog();
+      let roots = null; try { roots = await F.listRoots(); } catch { /* 아이패드 등 */ }
+      review(student, rows, { usd: 0, sec: 0, scopeName: sh.scope || '', roots, sheetId: sh.id, opts: sh.opts || {}, edit: true });
+    } catch (e) { ctx.closeModal(); ctx.toast(e.message); }
+  }
+  async function deleteSheet(student, id) {
+    const sh = (student.sheets || []).find((x) => x.id === id);
+    if (!confirm(`${new Date(sh?.at || Date.now()).toLocaleDateString('ko-KR')} 오답노트(${sh?.count || 0}문항)를 지울까요?\n들어 있던 문항은 "오답노트 안 만듦"으로 돌아가 다음에 다시 고를 수 있습니다.`)) return false;
+    const fresh = (await fs.getDoc(ref('students', student.id))).data() || {};
+    const noted = { ...(fresh.noted || {}) }; for (const k of Object.keys(noted)) if (noted[k] === id) delete noted[k];
+    await saveStudent(student.id, { sheets: (fresh.sheets || []).filter((x) => x.id !== id), noted });
+    return true;
   }
 
   async function logUsage(usd) {
@@ -446,8 +500,8 @@ export function createWrong(ctx) {
     const draw = () => {
       const ok = rows.filter((x) => !x.err), bad = rows.filter((x) => x.err);
       const nAI = ok.filter((x) => x.q === 'ai').length + ok.filter((x) => x.s === 'ai').length;
-      ctx.openModal(`<div class="wide"><h2>${esc(student.name)} · 1차 오답노트 문항 확인</h2>
-        <p class="small muted">문항 ${ok.length}개 · 원본 잘라내기 ${ok.filter((x) => x.q === 'crop').length} · 해설지 ${ok.filter((x) => x.s === 'crop').length} · AI 사용 ${nAI}곳 ($${cost.usd.toFixed(2)}) · 걸린 시간 ${info.sec}초</p>
+      ctx.openModal(`<div class="wide"><h2>${esc(student.name)} · 1차 오답노트 ${info.edit ? '고치기' : '문항 확인'}</h2>
+        <p class="small muted">문항 ${ok.length}개 · 원본 잘라내기 ${ok.filter((x) => x.q === 'crop').length} · 해설지 ${ok.filter((x) => x.s === 'crop').length} · AI 사용 ${nAI}곳 ($${cost.usd.toFixed(2)})${info.sec ? ` · 걸린 시간 ${info.sec}초` : ''}${info.scopeName ? ' · ' + esc(info.scopeName) : ''}</p>
         ${bad.length ? `<div class="card" style="background:var(--red-bg)"><div class="row between"><b class="small">빠진 문항 ${bad.length}개 — 다시 시도 대기에 넣어 두었습니다 (새벽 분석 때도 이어서 처리)</b><button class="primary small" id="rAll">빠진 문항 모두 다시 시도</button></div>${bad.map((x) => `<div class="row between small" style="border-top:1px solid #f0d0cd;padding:4px 0"><span>${esc(x.w.title)} · ${esc(x.w.label)} ${esc(x.w.no)}번 — ${esc(x.err)}</span><button class="ghost small" data-retry="${rows.indexOf(x)}" ${busy.has(x) ? 'disabled' : ''}>${busy.has(x) ? '다시 시도 중…' : '다시 시도'}</button></div>`).join('')}</div>` : ''}
         <div class="row small" style="margin:6px 0"><span>한꺼번에:</span><button class="ghost small" data-bulk="crop">모두 원본</button><button class="ghost small" data-bulk="scan">흐린 것만 AI 타이핑</button><button class="ghost small" data-bulk="ai">모두 AI 타이핑</button></div>
         <div style="max-height:52vh;overflow:auto">${ok.map((x, n) => { const i = rows.indexOf(x); return `<div class="rv">
@@ -464,7 +518,12 @@ export function createWrong(ctx) {
       const keep = { per: document.getElementById('nPer'), cover: document.getElementById('nCover'), sol: document.getElementById('nSol') };
       Object.entries(prefs).forEach(([k, v]) => { if (keep[k]) keep[k][k === 'sol' ? 'checked' : 'value'] = v; });
       Object.entries(keep).forEach(([k, el]) => el.onchange = () => { prefs[k] = k === 'sol' ? el.checked : el.value; });
-      const go = (aud) => printDoc(buildDoc(student, rows.filter((x) => !x.err), aud, Number(keep.per.value), keep.cover.value, info.scopeName, keep.sol.checked), { autoPrint: false }).catch((e) => ctx.toast(e.message));
+      const go = (aud) => {
+        const p = printDoc(buildDoc(student, rows.filter((x) => !x.err), aud, Number(keep.per.value), keep.cover.value, info.scopeName, keep.sol.checked), { autoPrint: false }).catch((e) => ctx.toast(e.message));
+        // 지금 고른 원본/AI 선택과 출력 설정을 이 오답노트에 저장 (학생 카드에서 그대로 다시 출력)
+        if (info.sheetId) updateSheet(student.id, info.sheetId, { items: sheetItems(rows), count: rows.filter((x) => !x.err).length, opts: { per: Number(keep.per.value), cover: keep.cover.value, sol: keep.sol.checked } }).catch(() => {});
+        return p;
+      };
       document.getElementById('nStudent').onclick = () => go('student');
       document.getElementById('nTeacher').onclick = () => go('teacher');
       document.querySelectorAll('[data-q],[data-s]').forEach((btn) => btn.onclick = () => setMode(rows[btn.dataset.i], btn.dataset.q ? 'q' : 's', btn.dataset.q || btn.dataset.s));
@@ -480,7 +539,7 @@ export function createWrong(ctx) {
         draw();
       });
     };
-    const prefs = {};
+    const prefs = { per: String(info.opts?.per || 4), cover: info.opts?.cover || '', sol: info.opts?.sol !== false };
     async function setMode(x, kind, mode, quiet) {
       const before = cost.usd;
       try {
@@ -540,5 +599,5 @@ export function createWrong(ctx) {
   }
   const shortLabel = (s) => String(s || '').replace(/\s*-\s*\d+\s*레벨/, '').replace(/^[^/]+\//, '');
 
-  return { entry, noteSetup, makeNote, removeBook, progress, catalog, bookOf, retryItem };
+  return { entry, noteSetup, makeNote, removeBook, progress, catalog, bookOf, retryItem, printSheet, editSheet, deleteSheet };
 }
