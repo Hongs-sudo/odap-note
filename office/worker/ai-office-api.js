@@ -92,10 +92,11 @@ async function comment(d, env) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: env.MODEL || 'claude-sonnet-5-5', max_tokens: 400, system: SYSTEM, messages: [{ role: 'user', content: prompt }] }),
+    body: JSON.stringify({ model: env.MODEL || 'claude-sonnet-5-5', max_tokens: 2000, system: SYSTEM, messages: [{ role: 'user', content: prompt }] }),
   });
   const j = await r.json();
   if (!r.ok) throw new Error(j?.error?.message || `Claude 요청 실패 (${r.status})`);
   const text = (j.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('').trim();
+  if (!text) throw new Error('Claude가 빈 답을 보냈습니다 (' + (j.stop_reason || '') + ')');
   return { text, usage: j.usage || null, model: j.model };
 }
