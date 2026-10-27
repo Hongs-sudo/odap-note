@@ -1,0 +1,14 @@
+// Cloudflare Workers Builds 설정 — 워커 이름은 대시보드의 이름(ai-office-api)과 같아야 합니다.
+// 이 폴더(office/worker)가 바뀌어 깃허브에 올라가면 Cloudflare가 자동으로 배포합니다.
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "ai-office-api",
+  "main": "ai-office-api.js",
+  "compatibility_date": "2026-10-26",
+  "workers_dev": true,
+  // Anthropic은 홍콩 등 일부 지역의 요청을 받지 않으므로 미국 동부에서 실행되도록 고정
+  "placement": { "region": "gcp:us-east4" },
+  // 대시보드에서 넣은 변수(ALLOWED_EMAILS 등)를 지우지 않음. API 키(Secret)는 원래 유지됩니다.
+  "keep_vars": true,
+  "observability": { "enabled": true }
+}
