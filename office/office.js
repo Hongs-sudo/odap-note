@@ -30,7 +30,7 @@ async function askClaude(st, w) {
   const res = await fetch(OFFICE_API + '/comment', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const j = await res.json().catch(() => ({}));
   if (!res.ok || !j.text) throw new Error(j.error || `요청 실패 (${res.status})`);
-  const text = j.text.replace('이 학생', `${st.name || '이'} 학생`);
+  const text = j.text.replaceAll('이 학생', `${st.name || '이'} 학생`);
   aiCache[st.id] = { sig: sig(w), text, at: Date.now() }; store.set(AI_KEY, aiCache);
   return text;
 }
