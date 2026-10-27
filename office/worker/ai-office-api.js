@@ -1,7 +1,7 @@
 // 수학도서관 AI 교무실 전용 서버 (Cloudflare Worker: ai-office-api)
 // - 교무실 화면(GitHub Pages)에서만 호출, 원장님 구글 계정으로 로그인한 경우만 허용
 // - 학생 이름은 받지 않고, 단원·원인 집계만 받아 Claude가 의견을 씁니다
-// - 깃허브 main에 올리면 Cloudflare Workers Builds가 자동 배포합니다 (루트: office/worker)
+// - 깃허브 main에 올리면 Cloudflare가 자동 배포합니다 (루트 폴더: office/worker)
 //
 // Cloudflare 설정 (Worker > Settings > Variables and Secrets)
 //   ANTHROPIC_API_KEY : (Secret) Claude API 키 — 원장님이 직접 입력
