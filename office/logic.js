@@ -30,6 +30,18 @@ export function studentItems(student) {
       });
     });
   });
+  // 만든 오답노트에 저장된 문항도 함께 (오답 기록을 지운 뒤에도 남아 있음) — 이미 노트로 만든 문항이라 완료로 셈
+  [...(student.sheets || [])].sort((a, b) => (a.at || 0) - (b.at || 0)).forEach((sh) => {
+    (sh.items || []).forEach((w) => {
+      const k = wkey(w.bookId, w.sec, w.no);
+      const prev = items.get(k);
+      if (prev) { items.set(k, { ...prev, done: true, cause: prev.cause || w.cause || null }); return; }
+      items.set(k, {
+        k, bookId: w.bookId, title: w.title || '', label: w.label || '', unit: unitName(w.label), no: w.no,
+        cause: w.cause || null, at: sh.at || 0, done: true, fromSheet: true,
+      });
+    });
+  });
   return [...items.values()];
 }
 

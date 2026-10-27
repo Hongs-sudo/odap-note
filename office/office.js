@@ -35,6 +35,9 @@ async function askClaude(st, w) {
   return text;
 }
 
+// 오답 기록이 있거나 만든 오답노트가 있는 학생
+const hasWrongs = (s) => (s.records || []).some((r) => (r.wrongs || []).length) || (s.sheets || []).some((x) => (x.items || []).length);
+
 // ---------- 시계 ----------
 const tick = () => { $('#clock').textContent = new Date().toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' }); };
 tick(); setInterval(tick, 20000);
@@ -187,8 +190,8 @@ function drawTab() {
       : '<p class="empty">오답노트를 기다리는 학생이 없어요.</p>';
     body.querySelectorAll('[data-weak]').forEach((b) => b.onclick = () => { S.weakSid = b.dataset.weak; setTab('weak'); });
   } else if (S.tab === 'weak') {
-    const list = S.students.filter((s) => (s.records || []).length);
-    if (!list.length) { body.innerHTML = '<p class="empty">오답이 입력된 학생이 아직 없어요.</p>'; return; }
+    const list = S.students.filter(hasWrongs);
+    if (!list.length) { body.innerHTML = '<p class="empty">오답을 입력했거나 오답노트를 만든 학생이 아직 없어요.</p>'; return; }
     if (!list.some((s) => s.id === S.weakSid)) S.weakSid = list[0].id;
     const st = list.find((s) => s.id === S.weakSid); const w = weakness(st);
     body.innerHTML = `<label>학생<select id="weakSel">${list.map((s) => `<option value="${esc(s.id)}" ${s.id === st.id ? 'selected' : ''}>${esc(s.name)} ${esc(s.grade || '')}</option>`).join('')}</select></label>
@@ -224,7 +227,7 @@ function drawTab() {
 
 // ---------- 업무 지시 ----------
 function drawStudentSelect() {
-  const list = S.students.filter((s) => (s.records || []).length);
+  const list = S.students.filter(hasWrongs);
   const sel = $('#orderStudent'); const keep = sel.value;
   sel.innerHTML = list.map((s) => `<option value="${esc(s.id)}">${esc(s.name)} ${esc(s.grade || '')}</option>`).join('');
   if (list.some((s) => s.id === keep)) sel.value = keep;
