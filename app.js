@@ -15,6 +15,8 @@ import { createWrong } from './wrong.js';
 import { localDay } from './analysis.js';
 import * as FOLD from './folders.js';
 
+// 앱 버전: 고칠 때마다 올림. 연결 설정에서 지금 쓰는 버전과 서버의 최신 버전을 비교해 보여 줌
+const APP_VERSION = '2026.10.28-2';
 // ---------- 공통 ----------
 const $ = (s) => document.querySelector(s);
 const main = $('#main');
@@ -373,13 +375,15 @@ async function renderSettings() {
     <div class="card"><div class="kv"><span class="muted">계정</span><span>${esc(S.user.email)}</span>
       <span class="muted">내 UID</span><span><code>${esc(S.user.uid)}</code></span>
       <span class="muted">학원 ID</span><span><code>${esc(S.aid)}</code></span>
-      <span class="muted">API 주소</span><span><code>${esc(API_BASE)}</code></span></div>
+      <span class="muted">API 주소</span><span><code>${esc(API_BASE)}</code></span>
+      <span class="muted">앱 버전</span><span id="verBox"><b>${APP_VERSION}</b> <span class="muted small">확인 중…</span></span></div>
       <p class="muted small">UID는 서버 허용 목록(ALLOWED_UIDS)에 넣는 값입니다. 선생님을 추가할 때도 그분의 UID를 여기서 확인해 넣습니다.</p></div>
     <div class="card" id="health"><p class="muted">연결 상태 확인 중…</p></div>
     <div class="card" id="nightly"><p class="muted">새벽 분석 설정 불러오는 중…</p></div>
     <div class="card"><h3>출력 시험</h3><p class="muted small">재타이핑 시범(내신대비B 1.1 1회차 10문항 + 유사 1 + 정답·해설)으로 A4 출력과 인쇄를 시험합니다.</p>
       <div class="row"><button class="ghost small" data-a="sample" data-aud="student">학생용 미리보기</button><button class="ghost small" data-a="sample" data-aud="teacher">선생님용(출처 표시)</button><select id="smpPer" style="width:auto"><option value="2">한 쪽 2문항</option><option value="4" selected>한 쪽 4문항</option><option value="6">한 쪽 6문항</option></select></div></div>`;
   renderNightly();
+  checkVersion();
   const out = [];
   try {
     const h = await fetch(`${API_BASE}/health`).then((r) => r.json());
@@ -430,6 +434,15 @@ async function renderNightly() {
     } catch (er) { toast('시험 실행 오류: ' + er.message); }
     renderNightly();
   };
+}
+
+async function checkVersion() {
+  const box = document.getElementById('verBox'); if (!box) return;
+  try {
+    const v = (await (await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' })).json()).version;
+    box.innerHTML = v === APP_VERSION ? `<b>${APP_VERSION}</b> <span class="badge">최신</span>`
+      : `<b>${APP_VERSION}</b> <span class="badge red">새 버전 ${esc(v)} 있음</span> <span class="small">앱을 껐다 켜면 바뀝니다</span>`;
+  } catch { box.innerHTML = `<b>${APP_VERSION}</b>`; }
 }
 
 // 폴더 허락이 풀려 있으면(앱·크롬을 다시 켠 뒤) 맨 위에 알림 — 새벽 분석·원본 잘라내기에 필요
