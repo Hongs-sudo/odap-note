@@ -85,7 +85,7 @@ drawLog();
 function staff(status, bubble, alert = false) {
   const t = $('#tag1'); const b = $('#bubble1');
   t.className = 'name ' + (status === 'todo' ? 'todo' : 'on');
-  t.textContent = `오답노트 담당 · ${status === 'todo' ? '할 일 있음' : status === 'work' ? '작업 중' : '정리 완료'}`;
+  t.textContent = `학습관리팀 · ${status === 'todo' ? '오답노트 할 일 있음' : status === 'work' ? '작업 중' : '앱 4개'}`;
   b.textContent = bubble; b.classList.toggle('alert', alert);
 }
 
@@ -262,9 +262,3 @@ $('#orderForm').onsubmit = async (e) => {
   staff('done', msg); say(msg); log('오답노트 담당', msg);
   setTimeout(drawStaff, 12000);
 };
-
-document.querySelectorAll('.name[data-staff]').forEach((b) => b.onclick = () => {
-  if (b.dataset.staff === 'odap') { $('#odapPanel').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
-  const names = { similar: '유사문제 출제 담당', report: '학부모 리포트 담당', consult: '상담기록 담당' };
-  log(names[b.dataset.staff], '아직 준비 중이에요. 다음 단계에서 연결됩니다.');
-});

@@ -95,6 +95,31 @@ select{padding:10px;border-radius:8px;background:#fff;color:var(--ink);border:1p
 .login{position:fixed;inset:0;background:rgba(247,244,236,.96);display:flex;align-items:center;justify-content:center;padding:16px;z-index:10}
 .login .card{max-width:380px;width:100%;display:flex;flex-direction:column;align-items:center;gap:12px;padding:28px}
 
+/* 팀 이름표 */
+.name{background:var(--green);color:var(--on-green)}
+.name.picked{background:var(--gold);color:var(--ink);outline:3px solid #fff}
+/* 프로젝트 현황판 */
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid var(--line);background:#fff;color:var(--green);border-radius:999px;padding:6px 12px;font-size:12px;cursor:pointer;min-height:32px}
+.chip.on{background:var(--green);color:var(--on-green);border-color:var(--green);font-weight:700}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.pcard{border:1px solid var(--line);border-radius:14px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;background:#fff}
+.pcard.open{border:2px solid var(--green)}
+.pcard h3{font-size:16px;margin:0}
+.pdesc{margin:0;font-size:13px;line-height:1.5;color:#333}
+.appicon{flex:none;width:44px;height:44px;border-radius:10px;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;letter-spacing:-.5px}
+.primary.sm{min-height:36px;font-size:13px;padding:0 14px}
+a.ghost{text-decoration:none;display:inline-flex;align-items:center}
+/* 앱 창 */
+.apptabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px}
+.apptabs button{flex:none;border:0;background:var(--green-100);color:var(--green);border-radius:999px;padding:6px 12px;font-size:12px;cursor:pointer;min-height:32px;white-space:nowrap}
+.apptabs button.on{background:var(--green);color:var(--on-green);font-weight:700}
+.frame-wrap{position:relative;height:min(78vh,860px);border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff}
+.frame-wrap iframe{width:100%;height:100%;border:0;display:block}
+.frame-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:16px;color:var(--muted);background:repeating-linear-gradient(135deg,#FBF9F3 0 14px,#F4F0E6 14px 28px)}
+.appwin.big{position:fixed;inset:8px;z-index:20;box-shadow:0 10px 40px rgba(0,0,0,.25);overflow:auto}
+.appwin.big .frame-wrap{height:calc(100vh - 150px)}
+
 @media (max-width:760px){
   .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
   .weak-grid{grid-template-columns:1fr}
@@ -102,6 +127,7 @@ select{padding:10px;border-radius:8px;background:#fff;color:var(--ink);border:1p
   .bubble{display:none}
   .name{font-size:10px;padding:2px 8px;min-height:24px}
   .logo{height:40px}
-  .tag:has(.name.idle){display:none}
+  .tag:not(:has(#tag1)){display:none}
+  .frame-wrap{height:70vh}
   .chalk-name{font-size:10px;padding:4px 8px;top:8px;right:8px}
 }

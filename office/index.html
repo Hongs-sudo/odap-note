@@ -36,7 +36,7 @@
 
 <div class="layout">
 <main class="col-main">
-  <div class="row between"><h2>교무실 현황</h2><span class="muted small">직원 이름표를 누르면 그 직원의 업무가 열립니다</span></div>
+  <div class="row between"><h2>교무실 현황</h2><span class="muted small">팀 이름표를 누르면 그 팀의 앱만 아래 현황판에 보여요</span></div>
 
   <div class="scene card">
     <div class="scene-in" id="scene">
@@ -49,17 +49,17 @@
 
       <div class="tag" style="left:48.5%;top:31.25%">
         <div class="bubble" id="bubble1">데이터를 불러오는 중이에요</div>
-        <button class="name on" data-staff="odap" type="button" id="tag1">오답노트 담당 · 확인 중</button>
+        <button class="name on" data-team="learn" type="button" id="tag1">학습관리팀 · 확인 중</button>
       </div>
-      <div class="tag" style="left:61.39%;top:43.95%"><button class="name idle" data-staff="similar" type="button">유사문제 출제 담당 · 준비 중</button></div>
-      <div class="tag" style="left:35.03%;top:42.97%"><button class="name idle" data-staff="report" type="button">학부모 리포트 담당 · 준비 중</button></div>
-      <div class="tag" style="left:52.6%;top:52.25%"><button class="name idle" data-staff="consult" type="button">상담기록 담당 · 준비 중</button></div>
+      <div class="tag" style="left:61.39%;top:43.95%"><button class="name" data-team="naesin" type="button">내신·시험팀 · 앱 3개</button></div>
+      <div class="tag" style="left:35.03%;top:42.97%"><button class="name" data-team="report" type="button">리포트·상담팀 · 앱 2개</button></div>
+      <div class="tag" style="left:52.6%;top:52.25%"><button class="name" data-team="ops" type="button">원장실 · 앱 1개</button></div>
     </div>
   </div>
 
   <section class="card panel" id="odapPanel">
     <div class="row between wrap-gap">
-      <h2>오답노트 담당</h2>
+      <h2>학습관리팀 · 오답노트 담당</h2>
       <div class="tabs" role="tablist">
         <button role="tab" data-tab="todo" class="on" type="button">할 일</button>
         <button role="tab" data-tab="weak" type="button">약점 분석</button>
@@ -69,10 +69,27 @@
     <div id="tabBody"><p class="muted">불러오는 중…</p></div>
   </section>
 
-  <section class="card flow">
-    <h3>업무 흐름</h3>
-    <div class="steps">
-      <span>원장님 오답 체크</span><i>→</i><span class="hl">오답노트 담당 정리·분석</span><i>→</i><span>1차 오답노트 (오답노트 프로그램)</span><i>→</i><span class="dim">유사문제</span><i>→</i><span class="dim">학부모 리포트</span>
+  <section class="card panel" id="board">
+    <div class="row between wrap-gap">
+      <h2>프로젝트 현황판 <span class="muted" id="boardFilter" style="font-size:14px;font-weight:400">· 전체 10개</span></h2>
+      <div class="chips" id="teamChips" role="group" aria-label="팀 고르기"></div>
+    </div>
+    <div class="cards" id="cards"></div>
+  </section>
+
+  <section class="card panel appwin" id="appWin">
+    <div class="row between wrap-gap">
+      <h2>앱 창 · <span id="appTitle">앱을 골라 주세요</span></h2>
+      <div class="row">
+        <a class="ghost" id="appNew" href="#" target="_blank" rel="noopener">새 창으로 ↗</a>
+        <button class="ghost" id="appBig" type="button" aria-pressed="false">크게 보기</button>
+        <button class="ghost" id="appReload" type="button">새로고침</button>
+      </div>
+    </div>
+    <div class="apptabs" id="appTabs" role="tablist" aria-label="앱 고르기"></div>
+    <p class="muted small" id="appNote"></p>
+    <div class="frame-wrap"><iframe id="appFrame" title="앱 창" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+      <div class="frame-empty" id="appEmpty">위 현황판에서 <b>교무실에서 열기</b>를 누르거나 탭을 고르면 앱이 여기에 열려요.</div>
     </div>
   </section>
 </main>
@@ -82,10 +99,10 @@
     <h2>업무 지시</h2>
     <label>담당 직원
       <select id="orderStaff">
-        <option value="odap">오답노트 담당</option>
-        <option disabled>유사문제 출제 담당 (준비 중)</option>
-        <option disabled>학부모 리포트 담당 (준비 중)</option>
-        <option disabled>상담기록 담당 (준비 중)</option>
+        <option value="odap">학습관리팀 · 오답노트 담당</option>
+        <option disabled>내신·시험팀 (준비 중)</option>
+        <option disabled>리포트·상담팀 (준비 중)</option>
+        <option disabled>원장실 (준비 중)</option>
       </select>
     </label>
     <label>업무
@@ -106,9 +123,13 @@
     <ol class="log" id="log"></ol>
   </section>
 
+  <section class="card">
+    <h2>최근 앱 수정 기록</h2>
+    <ol class="log" id="commits"><li class="muted">불러오는 중…</li></ol>
+  </section>
+
   <section class="card note">
-    오답 데이터는 <b>오답노트 프로그램</b>과 같은 저장소에서 읽기만 합니다. 오답노트 PDF는 지금처럼 오답노트 프로그램에서 만들어요.
-    <a href="../" target="_blank" rel="noopener">오답노트 프로그램 열기 ↗</a>
+    교무실은 각 앱의 데이터를 <b>읽기만</b> 해요. 입력과 수정은 앱 창이나 각 앱에서 지금처럼 하시면 됩니다.
   </section>
 </aside>
 </div>
@@ -125,5 +146,6 @@
 </div>
 
 <script type="module" src="office.js"></script>
+<script type="module" src="hub.js"></script>
 </body>
 </html>
