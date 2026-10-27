@@ -37,31 +37,57 @@ export function inWindow(s, now = new Date()) {
   return a <= b ? m >= a && m < b : m >= a || m < b;
 }
 
-// 실행기: api(path, body) 함수와 저장소 콜백을 받아 동작
-export function createRunner({ api, getSettings, nextTask, saveResult, logUsage, todaySpent, onStatus }) {
+// 한국 시각(이 PC 시계) 기준 날짜 — AI 사용량·새벽 기록을 '그날'로 묶을 때 씀
+export const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+// 실행기: 정해 둔 시간대에 대기 목록을 쉬지 않고 이어서 처리 (한 건 끝나면 바로 다음 건)
+// nextTask()는 작업 또는 { stop: '멈춘 이유' } 또는 null(남은 일 없음)을 돌려줌
+// log(patch)로 그날 밤 기록(시작·끝·처리 수·비용·멈춘 이유·오류)을 남김
+export function createRunner({ api, getSettings, nextTask, saveResult, logUsage, todaySpent, onStatus, log }) {
   let running = false, timer = null, wake = null;
-  async function step() {
+  async function loop({ force = false, max = Infinity } = {}) {
+    if (running) return '이미 실행 중';
     const s = await getSettings();
-    if (running || !inWindow(s)) return;
-    if ((await todaySpent()) >= (s.dailyBudgetUSD ?? 5)) { onStatus?.('오늘 AI 예산에 닿아 멈췄습니다'); return; }
-    const task = await nextTask();
-    if (!task) { onStatus?.('대기 중인 분석이 없습니다'); return; }
+    if (!force && !inWindow(s)) return null;
     running = true;
+    let done = 0, reason = '', lastErr = '';
+    const note = (p) => (force ? null : log?.(p));
     try {
       wake = await navigator.wakeLock?.request('screen').catch(() => null);
-      onStatus?.(`분석 중: ${task.title}`);
-      const res = await task.run({ api, isOver: async () => !inWindow(await getSettings()) || (await todaySpent()) >= (s.dailyBudgetUSD ?? 5) });
-      await saveResult(task, res);
-      if (res?.usage) await logUsage(res.usage);
-    } catch (e) {
-      onStatus?.(`오류: ${e.message}`);
-      await saveResult(task, { error: e.message });
-    } finally { running = false; wake?.release?.(); }
+      if (!force) await log?.({ start: true });
+      while (done < max) {
+        if (!force && !inWindow(await getSettings())) { reason = '끝 시각'; break; }
+        const spent = await todaySpent();
+        if (spent >= (s.dailyBudgetUSD ?? 5)) { reason = `하루 예산 $${s.dailyBudgetUSD ?? 5} 도달`; break; }
+        let task;
+        try { task = await nextTask(); } catch (e) { reason = '대기 목록을 읽지 못함: ' + e.message; break; }
+        if (!task) { reason = '남은 일 없음'; break; }
+        if (task.stop) { reason = task.stop; break; }
+        onStatus?.(`분석 중: ${task.title}`);
+        try {
+          const res = await task.run({ api, isOver: async () => (!force && !inWindow(await getSettings())) || (await todaySpent()) >= (s.dailyBudgetUSD ?? 5) });
+          await saveResult(task, res);
+          if (res?.usage) await logUsage(res.usage);
+          done++;
+          await note({ done: 1, usd: res?.usage?.usd || 0, item: task.title });
+        } catch (e) {
+          await saveResult(task, { error: e.message });
+          await note({ error: `${task.title}: ${e.message}` });
+          lastErr = e.message; done++;
+        }
+      }
+    } finally {
+      running = false; wake?.release?.();
+      if (!force) await log?.({ stop: reason || '멈춤' });
+      onStatus?.(reason ? `새벽 분석 멈춤: ${reason}` : '');
+    }
+    return reason || (lastErr ? '오류: ' + lastErr : '');
   }
   return {
-    start() { if (!timer) { timer = setInterval(step, 60_000); step(); } },
+    start() { if (!timer) { timer = setInterval(() => loop().catch(() => {}), 60_000); loop().catch(() => {}); } },
     stop() { clearInterval(timer); timer = null; },
-    runNow: step,
+    // 시간과 상관없이 대기 목록 1건만 바로 실행 (설정 시험용)
+    testOne: () => loop({ force: true, max: 1 }),
     get running() { return running; },
   };
 }

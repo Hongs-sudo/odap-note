@@ -2,7 +2,7 @@
 // - 교재는 "교재 정리"에서 읽은 목록(catalogBooks)을 씁니다.
 // - 문항 위치·정답은 PDF 글자층에서 읽고(무료), 문항 재타이핑만 AI를 씁니다. 한 번 타이핑한 쪽은 문항 은행에 저장돼 다시 쓰지 않습니다.
 import * as F from './folders.js';
-import { openPdf } from './analysis.js';
+import { openPdf, localDay } from './analysis.js';
 import { readOutline, readAnswerBook, normNo } from './outline.js';
 import { cropProblem, cropRegions, toJpegBase64, pageJpegBase64 } from './crop.js';
 import { printDoc } from './print/print.js';
@@ -373,7 +373,7 @@ export function createWrong(ctx) {
   }
 
   async function logUsage(usd) {
-    await fs.setDoc(ref('aiUsage', new Date().toISOString().slice(0, 10)), { usd: fs.increment(usd), calls: fs.increment(1) }, { merge: true });
+    await fs.setDoc(ref('aiUsage', localDay()), { usd: fs.increment(usd), calls: fs.increment(1) }, { merge: true });
   }
   // AI 호출: 일시 오류면 몇 초 쉬고 두 번 더 시도 (서버에서도 3번까지 다시 시도함)
   async function aiCall(path, body) {

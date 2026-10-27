@@ -8,10 +8,12 @@ import {
   onSnapshot, serverTimestamp, where,
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import { FIREBASE_CONFIG, API_BASE } from './config.js';
-import { writeBatch, getDocs, limit, increment, arrayUnion } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+import { writeBatch, getDocs, limit, increment, arrayUnion, deleteField, getCountFromServer } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import { createLibrary } from './library.js';
 import { printDoc } from './print/print.js';
 import { createWrong } from './wrong.js';
+import { localDay } from './analysis.js';
+import * as FOLD from './folders.js';
 
 // ---------- 공통 ----------
 const $ = (s) => document.querySelector(s);
@@ -85,6 +87,7 @@ onAuthStateChanged(auth, async (user) => {
   listen();
   render();
   lib().runner.start(); // 새벽 분석: 정해 둔 시간에 프로그램이 열려 있으면 자동 실행
+  permBanner();
 });
 
 function renderLogin() {
@@ -143,7 +146,7 @@ function lib() {
   LIB ||= createLibrary({
     main: () => main, toast, db, aid: () => S.aid, api: ai, openModal, closeModal,
     itemTask: (t) => async () => wr().retryItem(t),
-    fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, query, where, orderBy, limit, updateDoc, increment },
+    fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, query, where, orderBy, limit, updateDoc, increment, arrayUnion, deleteField },
   });
   return LIB;
 }
@@ -395,19 +398,59 @@ async function renderSettings() {
 async function renderNightly() {
   const box = document.getElementById('nightly'); if (!box) return;
   const s = (await getDoc(ref('settings', 'nightly'))).data() || { enabled: false, start: '02:00', end: '06:00', dailyBudgetUSD: 5 };
-  const today = new Date().toISOString().slice(0, 10);
-  const u = (await getDoc(ref('aiUsage', today))).data() || {};
-  const q = await getDocs(query(col('analysisQueue'), where('status', '==', 'queued'), limit(500)));
-  box.innerHTML = `<h3>새벽 자동 분석</h3><p class="muted small">정한 시간에 이 PC의 크롬에서 프로그램이 열려 있으면 대기 중인 교재를 이어서 분석합니다. PC 절전은 꺼 두세요.</p>
+  const u = (await getDoc(ref('aiUsage', localDay()))).data() || {};
+  const cnt = async (...w) => { try { return (await getCountFromServer(query(col('analysisQueue'), ...w))).data().count; } catch { return '?'; } };
+  const [qToc, qItem, qWait, qErr] = await Promise.all([
+    cnt(where('status', '==', 'queued'), where('task', '==', 'toc')), cnt(where('status', '==', 'queued'), where('task', '==', 'item')),
+    cnt(where('status', '==', 'waiting-folder')), cnt(where('status', '==', 'error'))]);
+  const runs = (await getDocs(col('aiUsage'))).docs.filter((d) => d.id.startsWith('run_')).map((d) => ({ day: d.id.slice(4), ...d.data() })).sort((a, b) => b.day.localeCompare(a.day)).slice(0, 7);
+  const hm = (t) => (t ? new Date(t).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '-');
+  box.innerHTML = `<h3>새벽 자동 분석</h3><p class="muted small">정한 시간에 이 PC에서 오답노트 앱이 열려 있으면 대기 목록을 쉬지 않고 이어서 처리합니다. 앱 창은 열어 두고(최소화 가능), PC 절전은 꺼 두세요.</p>
     <div class="row"><label class="row small"><input type="checkbox" id="nOn" ${s.enabled ? 'checked' : ''}> 사용</label>
       <input type="time" id="nStart" value="${s.start}" style="width:auto"> ~ <input type="time" id="nEnd" value="${s.end}" style="width:auto">
       <span class="small">하루 AI 예산 $</span><input type="number" id="nBudget" min="0" step="1" value="${s.dailyBudgetUSD ?? 5}" style="width:80px">
-      <button class="primary small" id="nSave">저장</button></div>
-    <div class="kv" style="margin-top:10px"><span class="muted">대기 중</span><span>${q.size}건</span><span class="muted">오늘 AI 사용</span><span>$${(u.usd || 0).toFixed(2)} · ${u.calls || 0}회</span></div>`;
+      <button class="primary small" id="nSave">저장</button><button class="ghost small" id="nTest">지금 1건 시험 실행</button></div>
+    <div class="kv" style="margin-top:10px"><span class="muted">대기 중</span><span>단원 수 분석 ${qToc}권 · 빠진 문항 다시 시도 ${qItem}건${qWait ? ` · 폴더 연결 필요 ${qWait}건` : ''}${qErr ? ` · 오류 ${qErr}건` : ''}</span>
+      <span class="muted">오늘 AI 사용</span><span>$${(u.usd || 0).toFixed(2)} · ${u.calls || 0}회 <span class="muted small">(${localDay()} 0시부터)</span></span></div>
+    <h3 style="margin-top:14px">최근 새벽 분석 기록</h3>
+    ${runs.length ? `<table class="small" style="width:100%;border-collapse:collapse;margin-top:6px"><tr style="background:var(--green-bg)"><th style="text-align:left;padding:4px">날짜</th><th>시작~끝</th><th>처리</th><th>비용</th><th style="text-align:left">멈춘 이유</th></tr>
+      ${runs.map((r) => `<tr style="border-bottom:1px solid var(--line)"><td style="padding:4px">${r.day.slice(5).replace('-', '.')}</td><td style="text-align:center">${hm(r.startAt)}~${hm(r.endAt || r.lastAt)}</td><td style="text-align:center">${r.done || 0}건</td><td style="text-align:center">$${(r.usd || 0).toFixed(2)}</td>
+        <td style="${/허락|오류|읽지 못함/.test(r.stop || '') ? 'color:var(--red)' : ''}">${esc(r.stop || (r.endAt ? '' : '진행 중이거나 중간에 꺼짐'))}${(r.errors || []).length ? ` <span class="muted">· 오류 ${r.errors.length}건</span>` : ''}</td></tr>`).join('')}</table>`
+      : '<p class="muted small">아직 기록이 없습니다. 새벽 분석이 한 번이라도 돌면 여기에 날짜별로 남습니다. 오늘 밤 이후에도 비어 있으면 앱이 닫혀 있었거나 PC가 절전 상태였던 것입니다.</p>'}`;
   document.getElementById('nSave').onclick = async () => {
     await setDoc(ref('settings', 'nightly'), { enabled: nOn.checked, start: nStart.value, end: nEnd.value, dailyBudgetUSD: Number(nBudget.value) || 0 }, { merge: true });
     toast('새벽 분석 설정 저장');
   };
+  document.getElementById('nTest').onclick = async (e) => {
+    const btn = e.currentTarget; btn.disabled = true; btn.textContent = '시험 실행 중…';
+    try {
+      await reconnectFolders(); // 버튼을 누른 김에 폴더 허락도 다시 받음
+      const reason = await lib().runner.testOne();
+      toast(!reason ? '시험 실행 성공 — 1건 처리했습니다. 교재 정리 탭에서 단원 수를 확인하세요' : reason === '남은 일 없음' ? '대기 목록이 비어 있습니다' : `시험 실행 멈춤: ${reason}`);
+    } catch (er) { toast('시험 실행 오류: ' + er.message); }
+    renderNightly();
+  };
+}
+
+// 폴더 허락이 풀려 있으면(앱·크롬을 다시 켠 뒤) 맨 위에 알림 — 새벽 분석·원본 잘라내기에 필요
+async function reconnectFolders() {
+  const roots = await FOLD.listRoots(); const need = [];
+  for (const r of roots) if ((await FOLD.permission(r)) !== 'granted') need.push(r);
+  if (need.length) await FOLD.reconnectAll(need);
+  return need.length;
+}
+async function permBanner() {
+  document.getElementById('permBanner')?.remove();
+  if (!FOLD.supported()) return;
+  const roots = await FOLD.listRoots().catch(() => []);
+  let need = 0; for (const r of roots) if ((await FOLD.permission(r)) !== 'granted') need++;
+  const last = (await getDocs(col('aiUsage'))).docs.filter((d) => d.id.startsWith('run_')).map((d) => ({ day: d.id.slice(4), ...d.data() })).sort((a, b) => b.day.localeCompare(a.day))[0];
+  const lastBad = last && last.day === localDay() && /허락/.test(last.stop || '');
+  if (!need && !lastBad) return;
+  const div = document.createElement('div'); div.id = 'permBanner'; div.className = 'card'; div.style.cssText = 'background:var(--gold-bg);max-width:860px;margin:12px auto 0';
+  div.innerHTML = `<div class="row between"><span class="small"><b>MYBOX 폴더 허락이 필요합니다.</b> ${lastBad ? '오늘 새벽 분석이 이 때문에 쉬었습니다. ' : ''}누른 뒤 크롬이 물으면 <b>"방문할 때마다 허용"</b>을 고르세요. 그래야 새벽에 다시 묻지 않습니다.</span><button class="primary small" id="permGo">MYBOX 다시 연결</button></div>`;
+  main.before(div);
+  document.getElementById('permGo').onclick = async () => { await reconnectFolders(); permBanner(); toast('폴더를 다시 연결했습니다'); };
 }
 
 async function printSample(aud) {

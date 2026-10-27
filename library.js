@@ -2,7 +2,7 @@
 import * as F from './folders.js';
 import { buildCatalog, isExam } from './catalog.js';
 import { printDoc } from './print/print.js';
-import { createRunner, tocTask, retypeTask, inWindow } from './analysis.js';
+import { createRunner, tocTask, retypeTask, inWindow, localDay } from './analysis.js';
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 export const bookId = (key) => { let h = 2166136261; for (const ch of key) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619); } return 'b' + (h >>> 0).toString(36); };
@@ -162,7 +162,7 @@ export function createLibrary(ctx) {
   const runner = createRunner({
     api: ctx.api,
     getSettings: async () => (await fs.getDoc(ref('settings', 'nightly'))).data() || {},
-    todaySpent: async () => (await fs.getDoc(ref('aiUsage', new Date().toISOString().slice(0, 10)))).data()?.usd || 0,
+    todaySpent: async () => (await fs.getDoc(ref('aiUsage', localDay()))).data()?.usd || 0,
     nextTask: async () => {
       // 프로그램을 켠 뒤 교재 정리 탭을 한 번도 안 열었어도 폴더·교재 정보를 직접 불러옴
       if (!st.roots.length) await refreshRoots();
@@ -179,7 +179,7 @@ export function createLibrary(ctx) {
           const r = st.roots.find((rr) => rr.label === t.label);
           if (!r) { await fs.updateDoc(x.ref, { status: 'waiting-folder' }); continue; }
           // 크롬을 다시 켜서 폴더 허락이 풀렸으면, 대기 목록은 그대로 두고 멈춤 (아침에 "MYBOX 다시 연결"을 누르면 다음 밤에 이어서)
-          if ((await F.permission(r)) !== 'granted') { ctx.toast?.('MYBOX 폴더 허락이 필요해 새벽 분석을 쉬었습니다'); return null; }
+          if ((await F.permission(r)) !== 'granted') return { stop: 'MYBOX 폴더 허락 필요 (교재 정리 탭의 "MYBOX 다시 연결"을 누르고 "방문할 때마다 허용"을 고르세요)' };
           const file = await F.openFile(r, t.rel);
           return { id: x.id, ref: x.ref, title: t.title, task: t, run: t.task === 'toc' ? tocTask({ file, title: t.title }) : retypeTask({ file, title: t.title, cursor: t.cursor || 1 }) };
         }
@@ -199,7 +199,18 @@ export function createLibrary(ctx) {
         await fs.updateDoc(task.ref, { status: res.done ? 'done' : 'queued', cursor: res.cursor, at: Date.now() });
       }
     },
-    logUsage: async (u) => { await fs.setDoc(ref('aiUsage', new Date().toISOString().slice(0, 10)), { usd: fs.increment(u.usd || 0), input: fs.increment(u.input || 0), output: fs.increment(u.output || 0), calls: fs.increment(1) }, { merge: true }); },
+    log: async (p) => {
+      const r = ref('aiUsage', 'run_' + localDay());
+      const now = Date.now(); const d = { lastAt: now };
+      if (p.start) { const cur = (await fs.getDoc(r)).data(); if (!cur?.startAt) d.startAt = now; d.stop = fs.deleteField(); }
+      if (p.done) d.done = fs.increment(p.done);
+      if (p.usd) d.usd = fs.increment(p.usd);
+      if (p.item) d.items = fs.arrayUnion(p.item);
+      if (p.error) d.errors = fs.arrayUnion(p.error.slice(0, 200));
+      if (p.stop) { d.stop = p.stop; d.endAt = now; }
+      await fs.setDoc(r, d, { merge: true });
+    },
+    logUsage: async (u) => { await fs.setDoc(ref('aiUsage', localDay()), { usd: fs.increment(u.usd || 0), input: fs.increment(u.input || 0), output: fs.increment(u.output || 0), calls: fs.increment(1) }, { merge: true }); },
     onStatus: (s) => { st.status = s; renderStatus(); },
   });
 
