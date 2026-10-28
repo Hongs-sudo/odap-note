@@ -106,7 +106,10 @@ const CALC = {
   async roadmap(c, t) {
     const st = await list(c, t, 'students', ['updatedAt', 'createdAt', 'name']);
     const ws = weekStart(); const at = (x) => (typeof x === 'number' ? x : Date.parse(x || '') || 0);
-    return [{ k: '학생', v: `${st.length}명` }, { k: '이번 주 작성·수정', v: `${st.filter((x) => at(x.updatedAt) >= ws).length}명` }];
+    const last = Math.max(0, ...st.map((x) => at(x.updatedAt)));
+    const items = [{ k: '학생', v: `${st.length}명` }, { k: '이번 주 수정', v: `${st.filter((x) => at(x.updatedAt) >= ws).length}명` }];
+    if (last) { const d = new Date(last); items.push({ k: '최근 수정', v: `${d.getMonth() + 1}.${pad(d.getDate())}` }); }
+    return items;
   },
   async planner(c, t) {
     // 학생 명단: roll/meta.students, 플래너: entries 문서 이름 'planner:이름:날짜'

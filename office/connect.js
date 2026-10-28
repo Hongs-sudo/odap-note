@@ -2,7 +2,7 @@
 // 각 앱과 같은 이메일·비밀번호로 이 브라우저에 로그인해 두면, 현황판이 그 앱 데이터를 읽기만 합니다.
 import { initializeApp, getApps } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getAuth, signInWithEmailAndPassword } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { OTHER_FB } from './stats.js?v=5';
+import { OTHER_FB } from './stats.js?v=6';
 
 const NAMES = { roadmap: '수도 로드맵', planner: '수도플래너' };
 const $ = (s) => document.querySelector(s);
