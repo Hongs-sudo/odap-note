@@ -66,7 +66,7 @@ async function list(cfg, token, path, mask) {
     const r = await fetch(`https://firestore.googleapis.com/v1/projects/${cfg.projectId}/databases/(default)/documents/${path}?${q}`, { headers: { Authorization: `Bearer ${token}` } });
     if (!r.ok) throw new Error(r.status === 403 ? '읽기 권한 없음' : `읽기 실패 (${r.status})`);
     const j = await r.json();
-    (j.documents || []).forEach((d) => docs.push({ id: d.name.split('/').pop(), ...obj(d.fields) }));
+    (j.documents || []).forEach((d) => docs.push({ id: decodeURIComponent(d.name.split('/').pop()), ...obj(d.fields) }));
     if (!j.nextPageToken) break; page = j.nextPageToken;
   }
   return docs;
@@ -109,10 +109,15 @@ const CALC = {
     return [{ k: '학생', v: `${st.length}명` }, { k: '이번 주 작성·수정', v: `${st.filter((x) => at(x.updatedAt) >= ws).length}명` }];
   },
   async planner(c, t) {
-    const keys = await list(c, t, 'workspaces/sudo/studentKeys', ['name']);
+    // 학생 명단: roll/meta.students, 플래너: entries 문서 이름 'planner:이름:날짜'
+    const meta = (await list(c, t, 'workspaces/sudo/roll', ['students'])).find((d) => d.id === 'meta');
     const ent = await list(c, t, 'workspaces/sudo/entries', ['updatedAt']);
-    const ws = weekStart();
-    return [{ k: '학생', v: `${keys.length}명` }, { k: '이번 주 입력', v: `${ent.filter((x) => (x.updatedAt || 0) >= ws).length}건` }];
+    const pl = ent.map((d) => d.id.split(':')).filter((x) => x[0] === 'planner' && x[2]);
+    const last = pl.map((x) => x[2]).sort().pop();
+    const items = [{ k: '스터디그룹 학생', v: `${(meta?.students || []).length}명` }];
+    if (last) items.push({ k: `최근 플래너 (${last.slice(5).replace('-', '.')})`, v: `${new Set(pl.filter((x) => x[2] === last).map((x) => x[1])).size}명` });
+    items.push({ k: '플래너 쓴 학생', v: `${new Set(pl.map((x) => x[1])).size}명` });
+    return items;
   },
   async minutes(c, t) {
     const m = await list(c, t, 'minutes', ['date', 'label']);
