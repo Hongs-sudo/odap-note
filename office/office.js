@@ -157,6 +157,10 @@ function drawStats() {
   $('#stPending').innerHTML = `${pend.length}<small class="muted" style="font-size:13px;font-weight:400"> 명</small>`;
   $('#stLeft').textContent = pend.reduce((a, p) => a + p.left, 0);
   $('#stErr').textContent = queueSummary(S.queue).error;
+  // 현황판 카드(hub.js)에 오답노트 숫자 전달
+  const wk = new Date(); wk.setHours(0, 0, 0, 0); wk.setDate(wk.getDate() - ((wk.getDay() + 6) % 7));
+  const sheets = S.students.reduce((a, s) => a + (s.sheets || []).filter((x) => (x.at || 0) >= wk.getTime()).length, 0);
+  window.dispatchEvent(new CustomEvent('office:odap', { detail: { pending: pend.length, left: pend.reduce((a, p) => a + p.left, 0), sheets } }));
 }
 function drawStaff() {
   if (S.busy) return;

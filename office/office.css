@@ -131,3 +131,11 @@ a.ghost{text-decoration:none;display:inline-flex;align-items:center}
   .frame-wrap{height:70vh}
   .chalk-name{font-size:10px;padding:4px 8px;top:8px;right:8px}
 }
+
+/* 현황판 카드 숫자 */
+.metrics{display:flex;flex-wrap:wrap;gap:6px}
+.metric{display:flex;flex-direction:column;gap:1px;padding:6px 10px;border-radius:10px;background:var(--green-100);min-width:72px}
+.metric span{font-size:11px;color:#4b5b58}
+.metric b{font-size:15px;color:var(--green)}
+.mnote{margin:0;font-size:12px;color:#5b6b68;background:#f5f6f4;border-radius:10px;padding:6px 10px}
+.mnote.err{color:#A3243B;background:#fbeef0}
