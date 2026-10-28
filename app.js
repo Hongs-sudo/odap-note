@@ -16,7 +16,7 @@ import { localDay } from './analysis.js';
 import * as FOLD from './folders.js';
 
 // 앱 버전: 고칠 때마다 올림. 연결 설정에서 지금 쓰는 버전과 서버의 최신 버전을 비교해 보여 줌
-const APP_VERSION = '2026.10.28-2';
+const APP_VERSION = '2026.10.28-3';
 // ---------- 공통 ----------
 const $ = (s) => document.querySelector(s);
 const main = $('#main');
@@ -409,7 +409,7 @@ async function renderNightly() {
     cnt(where('status', '==', 'waiting-folder')), cnt(where('status', '==', 'error'))]);
   const runs = (await getDocs(col('aiUsage'))).docs.filter((d) => d.id.startsWith('run_')).map((d) => ({ day: d.id.slice(4), ...d.data() })).sort((a, b) => b.day.localeCompare(a.day)).slice(0, 7);
   const hm = (t) => (t ? new Date(t).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '-');
-  box.innerHTML = `<h3>새벽 자동 분석</h3><p class="muted small">정한 시간에 이 PC에서 오답노트 앱이 열려 있으면 대기 목록을 쉬지 않고 이어서 처리합니다. 앱 창은 열어 두고(최소화 가능), PC 절전은 꺼 두세요.</p>
+  box.innerHTML = `<h3>새벽 자동 분석</h3><p class="muted small">정한 시간에 이 PC에서 오답노트 앱이 열려 있으면 대기 목록을 쉬지 않고 이어서 처리합니다. 앱 창은 최소화하거나 가리지 말고 띄워 두세요(화면 꺼짐은 괜찮음). PC 절전은 꺼 두세요.</p>
     <div class="row"><label class="row small"><input type="checkbox" id="nOn" ${s.enabled ? 'checked' : ''}> 사용</label>
       <input type="time" id="nStart" value="${s.start}" style="width:auto"> ~ <input type="time" id="nEnd" value="${s.end}" style="width:auto">
       <span class="small">하루 AI 예산 $</span><input type="number" id="nBudget" min="0" step="1" value="${s.dailyBudgetUSD ?? 5}" style="width:80px">
@@ -418,8 +418,13 @@ async function renderNightly() {
       <span class="muted">오늘 AI 사용</span><span>$${(u.usd || 0).toFixed(2)} · ${u.calls || 0}회 <span class="muted small">(${localDay()} 0시부터)</span></span></div>
     <h3 style="margin-top:14px">최근 새벽 분석 기록</h3>
     ${runs.length ? `<table class="small" style="width:100%;border-collapse:collapse;margin-top:6px"><tr style="background:var(--green-bg)"><th style="text-align:left;padding:4px">날짜</th><th>시작~끝</th><th>처리</th><th>비용</th><th style="text-align:left">멈춘 이유</th></tr>
-      ${runs.map((r) => `<tr style="border-bottom:1px solid var(--line)"><td style="padding:4px">${r.day.slice(5).replace('-', '.')}</td><td style="text-align:center">${hm(r.startAt)}~${hm(r.endAt || r.lastAt)}</td><td style="text-align:center">${r.done || 0}건</td><td style="text-align:center">$${(r.usd || 0).toFixed(2)}</td>
-        <td style="${/허락|오류|읽지 못함/.test(r.stop || '') ? 'color:var(--red)' : ''}">${esc(r.stop || (r.endAt ? '' : '진행 중이거나 중간에 꺼짐'))}${(r.errors || []).length ? ` <span class="muted">· 오류 ${r.errors.length}건</span>` : ''}</td></tr>`).join('')}</table>`
+      ${runs.map((r) => { const ev = r.events || [], sleep = ev.filter((x) => /잠듦|가려지거나/.test(x)).length; return `<tr style="border-bottom:1px solid var(--line)"><td style="padding:4px">${r.day.slice(5).replace('-', '.')}</td><td style="text-align:center">${hm(r.startAt)}~${hm(r.endAt || r.lastAt)}</td><td style="text-align:center">${r.done || 0}건</td><td style="text-align:center">$${(r.usd || 0).toFixed(2)}</td>
+        <td style="${/허락|오류|읽지 못함/.test(r.stop || '') ? 'color:var(--red)' : ''}">${esc(r.stop || (r.endAt ? '' : '진행 중이거나 중간에 꺼짐'))}${sleep ? ` <span style="color:var(--red)">· 잠듦 ${sleep}번</span>` : ''}${(r.errors || []).length ? ` <span class="muted">· 오류 ${r.errors.length}건</span>` : ''}</td></tr>
+        ${ev.length || (r.items || []).length || (r.errors || []).length ? `<tr><td colspan="5" style="padding:0 4px 6px"><details><summary class="muted" style="cursor:pointer">자세히 보기</summary><div style="padding:4px 8px;line-height:1.7">
+          ${ev.map((x) => `<div style="color:${/잠듦|가려지거나/.test(x) ? 'var(--red)' : 'var(--sub)'}">● ${esc(x)}</div>`).join('')}
+          ${(r.errors || []).map((x) => `<div style="color:var(--red)">✗ ${esc(x)}</div>`).join('')}
+          ${(r.items || []).map((x) => `<div>✓ ${esc(x)}</div>`).join('')}</div></details></td></tr>` : ''}`; }).join('')}</table>
+      ${runs[0]?.events?.some((x) => /잠듦|가려지거나/.test(x)) ? '<p class="small" style="color:var(--red);margin:6px 0 0">새벽에 앱이 잠든 기록이 있습니다. PC 절전 모드를 "안 함"으로 두고, 앱 창은 최소화하거나 다른 창으로 가리지 말고 띄워 두세요 (화면 꺼짐은 괜찮음).</p>' : ''}`
       : '<p class="muted small">아직 기록이 없습니다. 새벽 분석이 한 번이라도 돌면 여기에 날짜별로 남습니다. 오늘 밤 이후에도 비어 있으면 앱이 닫혀 있었거나 PC가 절전 상태였던 것입니다.</p>'}`;
   document.getElementById('nSave').onclick = async () => {
     await setDoc(ref('settings', 'nightly'), { enabled: nOn.checked, start: nStart.value, end: nEnd.value, dailyBudgetUSD: Number(nBudget.value) || 0 }, { merge: true });

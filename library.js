@@ -200,8 +200,9 @@ export function createLibrary(ctx) {
       }
     },
     log: async (p) => {
-      const r = ref('aiUsage', 'run_' + localDay());
-      const now = Date.now(); const d = { lastAt: now };
+      const r = ref('aiUsage', 'run_' + localDay(p.day ? new Date(p.day) : new Date()));
+      const now = Date.now(); const d = p.event ? {} : { lastAt: now };
+      if (p.event) d.events = fs.arrayUnion(p.event);
       if (p.start) { const cur = (await fs.getDoc(r)).data(); if (!cur?.startAt) d.startAt = now; d.stop = fs.deleteField(); }
       if (p.done) d.done = fs.increment(p.done);
       if (p.usd) d.usd = fs.increment(p.usd);

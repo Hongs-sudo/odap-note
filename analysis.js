@@ -43,8 +43,9 @@ export const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMo
 // 실행기: 정해 둔 시간대에 대기 목록을 쉬지 않고 이어서 처리 (한 건 끝나면 바로 다음 건)
 // nextTask()는 작업 또는 { stop: '멈춘 이유' } 또는 null(남은 일 없음)을 돌려줌
 // log(patch)로 그날 밤 기록(시작·끝·처리 수·비용·멈춘 이유·오류)을 남김
+const hm = (t) => new Date(t).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false });
 export function createRunner({ api, getSettings, nextTask, saveResult, logUsage, todaySpent, onStatus, log }) {
-  let running = false, timer = null, wake = null;
+  let running = false, timer = null, wake = null, lastTick = Date.now();
   async function loop({ force = false, max = Infinity } = {}) {
     if (running) return '이미 실행 중';
     const s = await getSettings();
@@ -69,7 +70,7 @@ export function createRunner({ api, getSettings, nextTask, saveResult, logUsage,
           await saveResult(task, res);
           if (res?.usage) await logUsage(res.usage);
           done++;
-          await note({ done: 1, usd: res?.usage?.usd || 0, item: task.title });
+          await note({ done: 1, usd: res?.usage?.usd || 0, item: `${hm(Date.now())} ${task.title}` });
         } catch (e) {
           await saveResult(task, { error: e.message });
           await note({ error: `${task.title}: ${e.message}` });
@@ -84,7 +85,24 @@ export function createRunner({ api, getSettings, nextTask, saveResult, logUsage,
     return reason || (lastErr ? '오류: ' + lastErr : '');
   }
   return {
-    start() { if (!timer) { timer = setInterval(() => loop().catch(() => {}), 60_000); loop().catch(() => {}); } },
+    start() {
+      if (timer) return;
+      // 1분마다 확인. 직전 확인과 3분 넘게 벌어졌으면 그동안 PC·앱이 잠들어 있었던 것 → 그날 밤 기록에 남김
+      const tick = async () => {
+        const now = Date.now(), gap = now - lastTick, prev = lastTick; lastTick = now;
+        if (gap > 180_000) {
+          const s = await getSettings().catch(() => null);
+          if (s?.enabled && inWindow(s, new Date(prev))) await log?.({ day: prev, event: `${hm(prev)} 잠듦 → ${hm(now)} 깨어남 (${Math.round(gap / 60000)}분 멈춤)` });
+        }
+        loop().catch(() => {});
+      };
+      timer = setInterval(tick, 60_000); tick();
+      // 새벽 시간에 앱 창이 가려지거나 최소화되면 기록 (크롬이 안 보이는 창의 작업을 멈추는 경우가 있음)
+      if (typeof document !== 'undefined') document.addEventListener('visibilitychange', async () => {
+        const s = await getSettings().catch(() => null);
+        if (s?.enabled && inWindow(s)) await log?.({ event: `${hm(Date.now())} 앱 창이 ${document.hidden ? '가려지거나 최소화됨' : '다시 보임'}` });
+      });
+    },
     stop() { clearInterval(timer); timer = null; },
     // 시간과 상관없이 대기 목록 1건만 바로 실행 (설정 시험용)
     testOne: () => loop({ force: true, max: 1 }),
