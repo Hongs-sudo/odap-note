@@ -1,6 +1,7 @@
 // AI 교무실 — 프로젝트 현황판 · 앱 창 (앱 10개를 교무실 안에서 열기)
 import { TEAMS, APPS, teamOf, sameSite } from './projects.js';
 import { loadStats } from './stats.js';
+import { openConnect } from './connect.js';
 
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -44,7 +45,7 @@ function cards() {
       ${metrics(a.id)}
       <div class="row between small muted">
         <span>${last ? `최근 수정 ${last}` : a.repo ? '최근 수정 확인 중' : '깃허브 밖에서 운영'}</span>
-        <span>${sameSite(a.url) ? '교무실과 같은 주소' : '다른 주소 (새 창 권장)'}</span>
+        <span>${sameSite(a.url) ? '교무실과 같은 주소' : '다른 주소'}</span>
       </div>
       <div class="row" style="gap:8px">
         <button type="button" class="primary sm" data-open="${a.id}">교무실에서 열기</button>
@@ -53,6 +54,7 @@ function cards() {
     </article>`;
   }).join('');
   $('#cards').querySelectorAll('[data-open]').forEach((b) => b.onclick = () => openApp(b.dataset.open, true));
+  $('#cards').querySelectorAll('[data-connect]').forEach((b) => b.onclick = () => openConnect(b.dataset.connect, refreshStats));
 }
 
 // ---------- 카드 숫자 (각 앱 데이터를 읽기만) ----------
@@ -63,7 +65,8 @@ function metrics(id) {
   }
   const m = H.stats?.data?.[id];
   if (!m) return `<p class="mnote">${H.loading ? '숫자를 불러오는 중…' : '숫자 없음'}</p>`;
-  if (m.state === 'ok') return chipsOf(m.items);
+  if (m.state === 'ok') return chipsOf(m.items) + (m.src ? `<p class="msrc">${esc(m.src)} 기준</p>` : '');
+  if (m.state === 'connect') return `<div class="mnote row between" style="gap:8px"><span>${esc(m.msg)}</span><button type="button" class="primary sm" data-connect="${id}">연결하기</button></div>`;
   return `<p class="mnote ${m.state === 'error' ? 'err' : ''}">${esc(m.msg)}</p>`;
 }
 const chipsOf = (items) => `<div class="metrics">${items.map((x) => `<div class="metric"><span>${esc(x.k)}</span><b>${esc(x.v)}</b></div>`).join('')}</div>`;

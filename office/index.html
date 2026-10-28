@@ -147,6 +147,19 @@
 </div>
 
 <script type="module" src="office.js"></script>
-<script type="module" src="hub.js?v=3"></script>
+<dialog class="dlg" id="connectDlg">
+  <form id="connectForm" method="dialog">
+    <h2 id="connectTitle">앱 연결</h2>
+    <p class="muted small">이 앱에서 쓰시는 이메일과 비밀번호로 한 번 로그인해 주세요. 교무실은 이 앱의 숫자를 <b>읽기만</b> 해요. 비밀번호는 교무실에 저장되지 않아요.</p>
+    <label>이메일<input id="connectEmail" type="email" autocomplete="username" required></label>
+    <label>비밀번호<input id="connectPw" type="password" autocomplete="current-password" required></label>
+    <p class="small" id="connectMsg" role="status" style="color:#A3243B;min-height:1.2em"></p>
+    <div class="row" style="gap:8px;justify-content:flex-end">
+      <button class="ghost" type="submit" value="cancel" formnovalidate>닫기</button>
+      <button class="primary" type="submit" id="connectGo" value="go">연결하기</button>
+    </div>
+  </form>
+</dialog>
+<script type="module" src="hub.js?v=4"></script>
 </body>
 </html>

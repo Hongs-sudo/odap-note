@@ -9,7 +9,11 @@ const FB = {
   onemm: { apiKey: 'AIzaSyB6fL3WsiCqG8pJn9QqFfFvWFXFFu0dzO4', projectId: 'mathlibrary-1mm' },
   early: { apiKey: 'AIzaSyCHTsFIv1RaQB6fEvjP_oxHGJJr0ululC0', projectId: 'sudo-earlyadopter' },
   minutes: { apiKey: 'AIzaSyAnfqK1Ij6SQBssAW_GtMg47wNNRpDvHUo', projectId: 'sudo-proceedings' },
+  // 다른 주소의 앱 2개 — 교무실에서 한 번 로그인(connect.js)하면 읽을 수 있음
+  roadmap: { apiKey: 'AIzaSyBuQ02C_vNciOA4lxwUzhcwYcrAV3FgpIs', projectId: 'sudo-roadmap', authDomain: 'sudo-roadmap.firebaseapp.com', other: true },
+  planner: { apiKey: 'AIzaSyCJzfPGi5v5Xs6IJW3MuZRwbtRSwFbYHbA', projectId: 'sudoplanner', authDomain: 'sudoplanner.firebaseapp.com', other: true },
 };
+export const OTHER_FB = { roadmap: FB.roadmap, planner: FB.planner };
 
 // ---------- 날짜 ----------
 const pad = (n) => String(n).padStart(2, '0');
@@ -99,6 +103,17 @@ const CALC = {
     const wait = recs.filter((x) => x && x.sch && x.score == null && (!x.isoDate || x.isoDate <= today)).length;
     return [{ k: '점수 입력', v: `${recs.filter((x) => x && x.score != null).length}/${st.length * 6}` }, { k: '입력 대기', v: `${wait}건` }];
   },
+  async roadmap(c, t) {
+    const st = await list(c, t, 'students', ['updatedAt', 'createdAt', 'name']);
+    const ws = weekStart(); const at = (x) => (typeof x === 'number' ? x : Date.parse(x || '') || 0);
+    return [{ k: '학생', v: `${st.length}명` }, { k: '이번 주 작성·수정', v: `${st.filter((x) => at(x.updatedAt) >= ws).length}명` }];
+  },
+  async planner(c, t) {
+    const keys = await list(c, t, 'workspaces/sudo/studentKeys', ['name']);
+    const ent = await list(c, t, 'workspaces/sudo/entries', ['updatedAt']);
+    const ws = weekStart();
+    return [{ k: '학생', v: `${keys.length}명` }, { k: '이번 주 입력', v: `${ent.filter((x) => (x.updatedAt || 0) >= ws).length}건` }];
+  },
   async minutes(c, t) {
     const m = await list(c, t, 'minutes', ['date', 'label']);
     const last = m.filter((x) => x.date && x.date <= ymd()).sort((a, b) => b.date.localeCompare(a.date))[0];
@@ -106,29 +121,39 @@ const CALC = {
   },
 };
 
-// 데일리 리포트: 원장님 데이터는 이 브라우저 저장소(같은 주소)에 있음
-function daily() {
+// 데일리 리포트: 원장님 기록은 데일리 리포트 앱이 깃허브 보관 파일에 맞춰 둠 → 그 파일을 읽기만 함
+// (깃허브 연결은 데일리 리포트 앱에서 설정한 것을 그대로 씀. 없으면 이 브라우저 기록으로)
+async function dailyData() {
+  let cfg = {}; try { cfg = JSON.parse(localStorage.getItem('dailyreport.sync') || '{}'); } catch { /* 없음 */ }
+  const token = localStorage.getItem('dailyreport.token');
+  if (cfg.repo && token) {
+    try {
+      const repo = cfg.repo.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/^\/|\/$/g, '');
+      const r = await fetch(`https://api.github.com/repos/${repo}/contents/${encodeURIComponent(cfg.path || '데일리리포트_데이터.json')}?t=${Date.now()}`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github.raw' }, cache: 'no-store' });
+      if (r.ok) return { D: JSON.parse(await r.text()), src: '깃허브 보관 파일' };
+    } catch { /* 이 브라우저 기록으로 */ }
+  }
   let D; try { D = JSON.parse(localStorage.getItem('dailyreport.v1') || 'null'); } catch { D = null; }
+  return { D, src: '이 브라우저 기록' };
+}
+async function daily() {
+  const { D, src } = await dailyData();
   if (!D || !Array.isArray(D.records)) return { state: 'login', msg: '이 브라우저에서 데일리 리포트를 한 번 열면 숫자가 보여요' };
   const today = ymd();
   const recs = D.records.filter((r) => r.date === today);
   const links = D.links || [];
   const unsent = recs.filter((r) => !links.some((x) => x.recId === r.id && x.kind === 'parent')).length;
-  return { state: 'ok', items: [{ k: '재원 학생', v: `${(D.students || []).filter((s) => s.active !== false).length}명` }, { k: '오늘 기록', v: `${new Set(recs.map((r) => r.studentId)).size}명` }, { k: '오늘 미발송', v: `${unsent}건` }] };
+  return { state: 'ok', src, items: [{ k: '재원 학생', v: `${(D.students || []).filter((s) => s.active !== false).length}명` }, { k: '오늘 기록', v: `${new Set(recs.map((r) => r.studentId)).size}명` }, { k: '오늘 미발송', v: `${unsent}건` }] };
 }
 
 // 결과: { [앱id]: { state: 'ok'|'login'|'error'|'other', items?, msg? } }
 export async function loadStats() {
   const users = await savedUsers();
-  const out = {
-    daily: daily(),
-    planner: { state: 'other', msg: '다른 주소의 앱이라 숫자는 앱 창에서 확인해 주세요' },
-    roadmap: { state: 'other', msg: '다른 주소의 앱이라 숫자는 앱 창에서 확인해 주세요' },
-  };
+  const out = { daily: await daily() };
   await Promise.all(Object.entries(FB).map(async ([id, cfg]) => {
     try {
       const t = await tokenFor(cfg, users);
-      if (!t) { out[id] = { state: 'login', msg: '앱 창에서 한 번 로그인하면 숫자가 보여요' }; return; }
+      if (!t) { out[id] = cfg.other ? { state: 'connect', msg: '교무실에서 한 번 연결하면 숫자가 보여요' } : { state: 'login', msg: '앱 창에서 한 번 로그인하면 숫자가 보여요' }; return; }
       out[id] = { state: 'ok', items: await CALC[id](cfg, t) };
     } catch (e) { out[id] = { state: 'error', msg: `숫자를 불러오지 못했어요 (${e.message})` }; }
   }));

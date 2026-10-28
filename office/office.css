@@ -139,3 +139,9 @@ a.ghost{text-decoration:none;display:inline-flex;align-items:center}
 .metric b{font-size:15px;color:var(--green)}
 .mnote{margin:0;font-size:12px;color:#5b6b68;background:#f5f6f4;border-radius:10px;padding:6px 10px}
 .mnote.err{color:#A3243B;background:#fbeef0}
+.msrc{margin:-4px 0 0;font-size:11px;color:#6b7a77}
+.dlg{border:0;border-radius:16px;padding:22px;max-width:420px;width:calc(100% - 32px);box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.dlg::backdrop{background:rgba(10,20,18,.45)}
+.dlg form{display:flex;flex-direction:column;gap:10px}
+.dlg h2{margin:0}
+.dlg input{width:100%;box-sizing:border-box;margin-top:4px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font:inherit}
