@@ -1,7 +1,7 @@
 // AI 교무실 — 프로젝트 현황판 · 앱 창 (앱 10개를 교무실 안에서 열기)
 import { TEAMS, APPS, teamOf, sameSite } from './projects.js';
-import { loadStats } from './stats.js';
-import { openConnect } from './connect.js';
+import { loadStats } from './stats.js?v=5';
+import { openConnect } from './connect.js?v=5';
 
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
