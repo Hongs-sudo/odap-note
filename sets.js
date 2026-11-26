@@ -12,6 +12,7 @@ import * as F from './folders.js';
 import { bookId } from './library.js';
 
 const SKIP_DIR = /^(초기작업|전체오답|추가자료)$|전자칠판/;
+const SKIP_NAME = /기출믹싱|파이널체크/;
 const roleOf = (n) => (/빠른\s*정답/.test(n) ? 'quick' : /정답\s*및\s*해설|정답과\s*해설|해설/.test(n) ? 'answer' : 'problem');
 // 교재 기호
 export function codeOf(n) {
@@ -48,38 +49,41 @@ export function planSets(files, rootLabel, opts = {}) {
   for (const f of files) {
     const parts = f.rel.normalize('NFC').split('/'); const name = parts.pop();
     if (!/\.pdf$/i.test(name)) continue;
-    if (!parts.length) { skipped.push({ rel: f.rel, why: '맨 위 파일(신청현황·견적서·표지 등)' }); continue; }
     const bad = parts.find((p) => SKIP_DIR.test(p));
     if (bad) { skipped.push({ rel: f.rel, why: `${bad} 폴더` }); continue; }
-    const g = gradeNo(parts[0]); if (!g) { skipped.push({ rel: f.rel, why: '학년 폴더 밖' }); continue; }
-    // "교재 완성본" 폴더는 바로 위 폴더와 같은 묶음
-    const dirs = parts.slice(1).filter((p) => !/완성본/.test(p));
-    pdfs.push({ ...f, rel: f.rel.normalize('NFC'), name, stem: name.replace(/\.pdf$/i, ''), grade: g, sub: dirs[0] || '', done: parts.some((p) => /완성본/.test(p)) || /완성본/.test(name), role: roleOf(name), code: codeOf(name), mock: /모의고사/.test(name), week: /주말\s*모의고사/.test(name) });
+    if (SKIP_NAME.test(name)) { skipped.push({ rel: f.rel, why: '세트에서 빼기로 한 교재(기출믹싱·파이널체크)' }); continue; }
+    // 학년: "중1", "중1_1학기_…", "중2_2학기 전범위" 같은 폴더 (없으면 파일 이름의 "중등2-2")
+    const gi = parts.findIndex((p) => gradeNo(p));
+    const g = gi >= 0 ? gradeNo(parts[gi]) : (name.match(/중등\s*([123])-/) || [])[1];
+    if (!g || !parts.length) { skipped.push({ rel: f.rel, why: '학년 폴더 밖(신청현황·견적서·표지 등)' }); continue; }
+    // 묶음: 학년 폴더 아래의 폴더(중간·기말·완성본 폴더 제외), 예) "A.삼각비+원" → "삼각비+원"
+    const dirs = parts.slice(gi + 1).filter((p) => !/완성본/.test(p) && !termOf(p));
+    const term = parts.map(termOf).find(Boolean) || '';
+    pdfs.push({ ...f, rel: f.rel.normalize('NFC'), name, stem: name.replace(/\.pdf$/i, ''), grade: g, term, sub: (dirs[0] || '').replace(/^[A-Z]\.\s*/, ''), done: parts.some((p) => /완성본/.test(p)) || /완성본/.test(name), role: roleOf(name), code: codeOf(name), mock: /모의고사/.test(name), week: /주말\s*모의고사/.test(name) });
   }
-  // 세트 나누기: 학년 아래 폴더가 중간대비·기말대비로 나뉘면 폴더마다 다른 세트,
+  // 세트 나누기: 같은 학년의 교재가 중간대비·기말대비 폴더로 나뉘어 있으면 다른 세트,
   // 모의고사는 따로, 주말모의고사는 다른 모의고사와도 따로
-  const subsOf = (g) => [...new Set(pdfs.filter((p) => p.grade === g && p.sub).map((p) => p.sub))].sort();
-  const termSplit = (g) => { const subs = subsOf(g); return subs.length > 1 && subs.every((x) => termOf(x)); };
-  const groupName = (g, sub) => (!sub || termSplit(g) ? '' : sub.replace(/^[A-Z]\./, ''));
+  const kindOf = (p) => (p.week ? 'week' : p.mock ? 'mock' : 'main');
+  const termsOf = (g, kind) => [...new Set(pdfs.filter((p) => p.grade === g && kindOf(p) === kind).map((p) => p.term).filter(Boolean))];
   const sets = new Map();
   const setOf = (p) => {
-    const g = p.grade; const kind = p.week ? 'week' : p.mock ? 'mock' : 'main';
-    const term = termSplit(g) ? termOf(p.sub) : '';
+    const g = p.grade; const kind = kindOf(p);
+    const ts = termsOf(g, kind); const term = kind === 'main' && ts.length > 1 ? p.term : '';
     const key = `${kind}|${g}${term ? '|' + term : ''}`;
     if (!sets.has(key)) {
-      const t = term || (kind === 'week' ? termOf(p.name) : '');
-      const dflt = kind === 'main' ? `중${g}-2 ${t ? `2학기 ${t}대비` : '내신대비'}` : kind === 'mock' ? `중${g} 모의고사${t ? ` (2학기 ${t}대비)` : ''}` : `중${g} ${t ? t + '대비 ' : ''}주말모의고사`;
-      sets.set(key, { key, name: opts.names?.[key] || dflt, grade: `중${g}`, mock: kind !== 'main', order: (kind === 'main' ? 0 : 100) + Number(g) * 3 + (term === '기말' || kind === 'week' ? 1 : 0), groups: new Map() });
+      const t = term || (ts.length === 1 ? ts[0] : '');
+      const dflt = kind === 'main' ? `중${g}-2 ${term ? `2학기 ${term}대비` : t ? t + '대비' : '내신대비'}` : kind === 'mock' ? `중${g} 모의고사${t ? ` (2학기 ${t}대비)` : ''}` : `중${g} ${t ? t + '대비 ' : ''}주말모의고사`;
+      sets.set(key, { key, name: opts.names?.[key] || dflt, grade: `중${g}`, mock: kind !== 'main', order: (kind === 'main' ? 0 : kind === 'mock' ? 100 : 101) + Number(g) * 3 + (term === '기말' ? 1 : 0), groups: new Map() });
     }
     return sets.get(key);
   };
-  const grpOf = (set, g, sub) => {
-    const name = groupName(g, sub);
-    if (!set.groups.has(name)) set.groups.set(name, { name, sub, books: new Map(), quick: null });
+  const grpOf = (set, p) => {
+    const name = p.sub;
+    if (!set.groups.has(name)) set.groups.set(name, { name, sub: p.sub, books: new Map(), quick: null });
     return set.groups.get(name);
   };
   for (const p of pdfs) {
-    const set = setOf(p); const grp = grpOf(set, p.grade, p.sub);
+    const set = setOf(p); const grp = grpOf(set, p);
     if (p.role === 'quick') { grp.quick = { rel: p.rel, size: p.size, name: p.name }; continue; }
     if (!p.code) { skipped.push({ rel: p.rel, why: '교재 기호를 알 수 없음' }); continue; }
     if (!grp.books.has(p.code)) grp.books.set(p.code, { code: p.code, problems: [], answers: [] });
@@ -97,15 +101,16 @@ export function planSets(files, rootLabel, opts = {}) {
       }
       const books = [];
       for (const b of [...bk.values()].sort((a, b2) => cmpCode(a.code, b2.code))) {
-        const pick = (arr, pref) => [...arr].sort((a, c) => (pref(c) - pref(a)) || (c.mtime || 0) - (a.mtime || 0))[0];
+        const pick = (arr, pref) => [...arr].sort((a, c) => (pref(c) - pref(a)) || (c.mtime || 0) - (a.mtime || 0) || a.name.localeCompare(c.name, 'ko'))[0];
         const q = pick(b.problems, (x) => (x.done ? 1 : 0));
         if (!q) { skipped.push({ rel: b.answers[0]?.rel || b.code, why: '문제 PDF 없음' }); continue; }
         b.problems.filter((x) => x !== q).forEach((x) => skipped.push({ rel: x.rel, why: '같은 교재의 다른 판(완성본 사용)' }));
         let answers = b.answers;
-        if (!b.code.includes('+') && answers.length > 1) { const a = pick(answers, (x) => (/수정/.test(x.name) ? 1 : 0)); answers.filter((x) => x !== a).forEach((x) => skipped.push({ rel: x.rel, why: '같은 교재의 다른 해설(수정본 사용)' })); answers = [a]; }
+        const series = (x) => x.stem.replace(/_?(문제|정답\s*및\s*해설).*$/, '');
+        if (!b.code.includes('+') && answers.length > 1) { const a = pick(answers, (x) => (series(x) === series(q) ? 2 : 0) + (/수정/.test(x.name) ? 1 : 0)); answers.filter((x) => x !== a).forEach((x) => skipped.push({ rel: x.rel, why: '같은 교재의 다른 해설(수정본 사용)' })); answers = [a]; }
         const sameFile = !answers.length;
-        const term = termOf(q.sub) || (set.mock ? termOf(q.name) : '');
-        const title = `중${q.grade}-2 ${term ? term + '대비 ' : ''}${b.code}${grp.sub && !termOf(grp.sub) ? ' · ' + grp.name : ''}`.replace(/\s+/g, ' ').trim();
+        const term = set.key.split('|')[2] || (set.mock ? q.term : '');
+        const title = `중${q.grade}-2 ${term ? term + '대비 ' : ''}${b.code}${grp.name ? ' · ' + grp.name : ''}`.replace(/\s+/g, ' ').trim();
         books.push({
           code: b.code, title, sub: subtitle(q.stem) || (answers[0] ? subtitle(answers[0].stem) : ''), count: qCount(q.name), sameFile, mock: /주말\s*모의고사/.test(q.name),
           fullTitle: cleanTitle(q.stem).replace(/완성본/g, '').replace(/\s+/g, ' ').trim(),
@@ -126,9 +131,11 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const hash = (s) => { let h = 2166136261; for (const ch of String(s)) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
 export const SET_ROOT = { label: '내 PC·2학기 내신대비교재', path: 'C:\\Users\\user\\Desktop\\수학도서관\\중등내신대비\\2학기 내신대비교재', category: '내신대비', mode: 'sets' };
 // 원장님이 정한 세트 이름 (이 폴더를 처음 읽을 때 기본값)
+const AREA = /^(내신대비교재|\(주말\)\s*모의고사)$/;
+const SEMESTER = () => { const m = new Date().getMonth() + 1; return m >= 7 || m <= 1 ? '2학기' : '1학기'; };
 const FIRST_NAMES = {
   'main|1|중간': '중1-2 2학기 중간대비', 'main|1|기말': '중1-2 2학기 기말대비', 'main|2': '중2-2 내신대비 (중간·기말 통합)', 'main|3': '중3-2 기말대비',
-  'mock|1|중간': '중1 모의고사 (2학기 중간대비)', 'week|1|기말': '중1 모의고사 (2학기 기말대비)', 'mock|2': '중2 모의고사 A·B·C', 'week|2': '중2 기말대비 주말모의고사', 'mock|3': '중3 모의고사',
+  'mock|1': '중1 모의고사 (2학기 중간대비)', 'week|1': '중1 모의고사 (2학기 기말대비)', 'mock|2': '중2 모의고사 A·B·C', 'week|2': '중2 기말대비 주말모의고사', 'mock|3': '중3 모의고사',
 };
 const ansLabel = (b) => (b.sameFile ? '정답·해설: 같은 PDF 뒤쪽' : b.files.length > 2 ? `해설 ${b.files.length - 1}개 함께` : '문제+해설');
 
@@ -144,7 +151,7 @@ export function createSetBuilder(ctx) {
     return new Promise((resolve) => {
       ctx.openModal(`<h2>폴더로 세트 만들기 — 폴더 고르기</h2>
         ${roots.length ? `<p class="small">연결해 둔 폴더에서 고르거나, 새 폴더를 연결하세요.</p><div class="list" style="margin-bottom:10px">${roots.map((r) => `<button data-root="${r.id}"><span><b>${esc(r.label)}</b> <span class="muted small">${esc(r.path)}</span></span><span class="small">이 폴더로 →</span></button>`).join('')}</div>` : ''}
-        <div class="card small" style="background:var(--green-bg)">선생님들과 함께 쓰려면 <b>MYBOX(N: 드라이브)</b>에 있는 교재 폴더를 고르세요. 예) N: › 공유 › … › <b>2학기 내신대비교재</b><br>폴더를 한 번 눌러 고른 뒤 <b>[폴더 선택]</b> → 크롬이 물으면 <b>[파일 보기]</b>.</div>
+        <div class="card small" style="background:var(--green-bg)">선생님들과 함께 쓰려면 <b>MYBOX(N: 드라이브)</b>에 있는 교재 폴더를 고르세요. N: › 공유 › 공유받은 › 2026 중등부 › <b>A. 내신대비</b> (이 안의 내신대비교재·(주말)모의고사에서 이번 학기 폴더만 읽습니다)<br>폴더를 한 번 눌러 고른 뒤 <b>[폴더 선택]</b> → 크롬이 물으면 <b>[파일 보기]</b>.</div>
         <p class="muted small">읽기만 하고 파일은 바꾸지 않습니다. 선생님 PC에서도 <b>같은 이름의 폴더</b>를 연결하면 그대로 쓸 수 있습니다.</p>
         <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="ghost" data-a="close">취소</button><button class="primary" id="sbPick">새 폴더 연결</button></div>`);
       document.querySelectorAll('[data-root]').forEach((b) => (b.onclick = () => resolve(roots.find((r) => r.id === b.dataset.root))));
@@ -164,9 +171,14 @@ export function createSetBuilder(ctx) {
     const root = await pickRoot(); if (!root) return;
     if ((await F.permission(root)) !== 'granted') { const [[, p]] = await F.reconnectAll([root]); if (p !== 'granted') return ctx.toast('폴더 허락이 필요합니다. 다시 누르고 [파일 보기]를 고르세요.'); }
     ctx.openModal('<p class="pad center" id="sbMsg">폴더를 읽는 중…</p>');
-    const files = await F.scan(root, (n) => { const m = document.getElementById('sbMsg'); if (m) m.textContent = `폴더를 읽는 중… 파일 ${n}개`; });
+    // MYBOX "A. 내신대비"처럼 다른 자료가 많은 폴더: 내신대비교재·(주말)모의고사 안의 이번 학기 폴더만 읽음
+    const sem = SEMESTER();
+    const tops = []; for await (const [n, h] of root.handle.entries()) if (h.kind === 'directory') tops.push(n.normalize('NFC'));
+    const areas = tops.filter((n) => AREA.test(n));
+    const dirOk = areas.length ? (rel) => { const ps = rel.split('/').filter(Boolean); if (ps.length === 1) return AREA.test(ps[0]); if (ps.length === 2) return ps[1].includes(sem); return !SKIP_DIR.test(ps.at(-1)); } : null;
+    const files = await F.scan(root, (n) => { const m = document.getElementById('sbMsg'); if (m) m.textContent = `폴더를 읽는 중… 파일 ${n}개`; }, { dirOk, onlyPdf: true });
     const saved = (await fs.getDoc(ref('settings', 'folderSets'))).data() || {};
-    const names = { ...(/2학기 내신대비교재/.test(root.path) ? FIRST_NAMES : {}), ...(saved.names?.[root.label] || {}) };
+    const names = { ...(sem === '2학기' ? FIRST_NAMES : {}), ...(saved.names?.[root.label] || {}) };
     preview(root, planSets(files, root.label, { names }));
   }
 
@@ -181,7 +193,7 @@ export function createSetBuilder(ctx) {
           <div style="margin-top:4px">${g.books.map((b) => `<span class="badge" style="margin:2px 4px 2px 0;background:#fff;border:1px solid var(--line);color:var(--ink)"><b style="color:var(--green)">${esc(b.code)}</b>${b.sub ? ' ' + esc(b.sub) : ''}${b.count ? ` · ${b.count}문항` : ''} · <span class="${b.sameFile ? '' : 'muted'}">${ansLabel(b)}</span></span>`).join('')}</div></div>`).join('')}</div>`).join('')}
       ${plan.notes.length ? `<p class="small">${plan.notes.map(esc).join('<br>')}</p>` : ''}
       <details style="margin-top:8px"><summary class="small muted" style="cursor:pointer">세트에 넣지 않은 PDF ${plan.skipped.length}개 보기</summary><div class="small muted" style="line-height:1.7;margin-top:4px">${plan.skipped.map((x) => `· ${esc(x.rel)} <b>— ${esc(x.why)}</b>`).join('<br>')}</div></details></div>
-      <div class="row between" style="margin-top:12px"><span class="muted small">같은 이름으로 다시 만들면 새로 만들지 않고 고쳐집니다(학생 기록 유지).</span><div class="row"><button class="ghost" data-a="close">취소</button><button class="primary" id="sbGo">세트 만들기</button></div></div></div>`);
+      <div class="row between" style="margin-top:12px"><span class="muted small">예전에 만든 폴더 세트는 이 세트들로 바뀝니다. 학생에게 배정한 교재는 파일 이름으로 찾아 새 교재로 옮기고, 오답 기록은 그대로 남습니다.</span><div class="row"><button class="ghost" data-a="close">취소</button><button class="primary" id="sbGo">세트 만들기</button></div></div></div>`);
     const btn = document.getElementById('sbGo');
     const count = () => { btn.textContent = `세트 ${document.querySelectorAll('[data-sc]:checked').length}개 만들기`; };
     document.querySelectorAll('[data-sc]').forEach((c) => (c.onchange = count)); count();
@@ -220,7 +232,7 @@ export function createSetBuilder(ctx) {
           await step(); ids.push(id); nb++;
           // 단원 수 분석(새벽): 모의고사·주말모의고사는 목차가 없어 넣지 않음
           if (!/모의고사/.test(b.code) && !old?.units) { batch.set(ref('analysisQueue', 'toc_' + id), { task: 'toc', bookId: id, title: b.title, label: root.label, rel: b.files[0].rel, status: 'queued', createdAt: now, priority: 0 }, { merge: true }); await step(); }
-          setNames[b.files[0].rel.split('/').pop()] = id; newIds[b.files[0].rel] = id;
+          setNames[b.files[0].rel.split('/').pop()] = id; newIds[b.files[0].rel.split('/').pop()] = id;
         }
         groups.push({ name: g.name, ids, quick: g.quick ? { label: g.quick.label, rel: g.quick.rel, name: g.quick.name, size: g.quick.size } : null });
       }
@@ -233,11 +245,11 @@ export function createSetBuilder(ctx) {
     let dropped = 0;
     if (keys.length) for (const d of (await fs.getDocs(col('bookSets'))).docs) {
       const x = d.data();
-      const sameFolder = x.root === root.label || String(x.rootPath || '').split('\\').pop() === root.label;
-      if (x.source === 'folder' && sameFolder && (x.root !== root.label || !keys.includes(x.key))) { batch.delete(d.ref); dropped++; await step(); }
+      // 이 폴더의 예전 구성 세트 + 다른 폴더(예: 내 PC 폴더)로 만들었던 세트는 지우고 이번 세트로 바꿈
+      if (x.source === 'folder' && (x.root !== root.label || !keys.includes(x.key))) { batch.delete(d.ref); dropped++; await step(); }
     }
     // 예전에 다른 이름(예: "내 PC·2학기 내신대비교재")으로 만든 같은 교재 → 학생 교재 목록을 새 교재로 바꿔 줌 (오답 기록은 예전 교재에 그대로)
-    const relOf = (k) => String(k || '').split('|').slice(2).join('|');
+    const relOf = (k) => String(k || '').split('|').slice(2).join('|').split('/').pop(); // 파일 이름으로 같은 교재 찾기
     const remap = {};
     for (const x of all) if (x.source === 'folder-set' && String(x.key || '').split('|')[1] !== root.label) {
       const nid = newIds[relOf(x.key)]; if (nid && nid !== x.id) { remap[x.id] = nid; batch.set(ref('catalogBooks', x.id), { retired: true, replacedBy: nid }, { merge: true }); await step(); }

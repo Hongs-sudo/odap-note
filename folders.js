@@ -44,13 +44,14 @@ export async function reconnectAll(roots) {
 }
 
 // 폴더 안 파일을 모두 읽어 목록 만들기 (PDF·ZIP·HWP만, 하위 폴더 포함)
-export async function scan(rec, onProgress) {
+// opts.dirOk(상대 경로/): 읽을 하위 폴더만 고르기, opts.onlyPdf: PDF만
+export async function scan(rec, onProgress, opts = {}) {
   const files = [];
   async function walk(dir, prefix, depth) {
     if (depth > 8) return;
     for await (const [name, h] of dir.entries()) {
-      if (h.kind === 'directory') { await walk(h, prefix + name + '/', depth + 1); continue; }
-      if (!/\.(pdf|zip|hwp|hwpx)$/i.test(name)) continue;
+      if (h.kind === 'directory') { const sub = prefix + name.normalize('NFC') + '/'; if (!opts.dirOk || opts.dirOk(sub)) await walk(h, prefix + name + '/', depth + 1); continue; }
+      if (!(opts.onlyPdf ? /\.pdf$/i : /\.(pdf|zip|hwp|hwpx)$/i).test(name)) continue;
       const f = await h.getFile();
       files.push({ root: rec.path, label: rec.label, category: rec.category, rel: prefix + name, size: f.size, mtime: f.lastModified });
       if (files.length % 50 === 0) onProgress?.(files.length);
