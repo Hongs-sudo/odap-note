@@ -272,7 +272,7 @@ export function createWrong(ctx) {
     const books = collect(student);
     if (!books.length) return ctx.toast('먼저 오답을 입력하세요.');
     ctx.openModal('<p class="pad center">불러오는 중…</p>');
-    const scopes = (await fs.getDocs(col('examScopes'))).docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (b.at || 0) - (a.at || 0));
+    const scopes = (await fs.getDocs(col('examScopes'))).docs.map((d) => ({ id: d.id, ...d.data() })).filter((x) => x.kind !== 'prep').sort((a, b) => (b.at || 0) - (a.at || 0));
     const st = { redo: false, scope: '', on: new Set() };
     books.forEach((B) => B.secs.forEach((S) => { if (S.items.some((x) => !x.done)) st.on.add(B.bookId + '|' + S.sec); }));
     const units = [...new Set(books.flatMap((B) => B.secs.map((S) => S.unit)))];
@@ -367,7 +367,7 @@ export function createWrong(ctx) {
     if (!sh?.items?.length) throw new Error('문항 목록이 저장되지 않은 오답노트입니다 (이전 버전). 오답노트 만들기에서 "다시 넣기"로 다시 만들어 주세요.');
     const rows = [];
     for (const w of sh.items) {
-      const snap = await fs.getDoc(ref('bankItems', itemId(w.bookId, w.sec, w.no)));
+      const snap = await fs.getDoc(ref('bankItems', w.gid || itemId(w.bookId, w.sec, w.no))); // gid: AI 변형 문항
       if (!snap.exists()) { rows.push({ w, err: '문항 은행에서 찾지 못했습니다' }); continue; }
       const it = snap.data();
       const q = w.q === 'crop' && it.crop ? 'crop' : it.stem ? 'ai' : it.crop ? 'crop' : 'ai';
@@ -385,7 +385,7 @@ export function createWrong(ctx) {
       const { sh, rows } = await loadSheet(student, id);
       const ok = rows.filter((x) => !x.err);
       const o = sh.opts || {};
-      await printDoc(buildDoc(student, ok, audience, Number(o.per || 4), o.cover || '', sh.scope || '', o.sol !== false), { autoPrint: false, win });
+      await printDoc(buildDoc(student, ok, audience, Number(o.per || 4), o.cover || '', sh.scope || '', o.sol !== false, sh.kind || '1차'), { autoPrint: false, win });
       if (ok.length < rows.length) ctx.toast(`${rows.length - ok.length}문항은 문항 은행에서 찾지 못해 빠졌습니다`);
     } catch (e) { win.close(); ctx.toast(e.message); }
   }
@@ -613,24 +613,27 @@ export function createWrong(ctx) {
     draw();
   }
 
-  function buildDoc(student, rows, audience, perPage, cover, scopeName = '', withSol = true) {
+  // kind: '1차' 또는 '2차-① 유사1' 등 — 제목·머리말에 씀
+  function buildDoc(student, rows, audience, perPage, cover, scopeName = '', withSol = true, kind = '1차') {
+    const KL = kind === '1차' ? '1차 오답노트' : `${kind} 유사문항`;
+    const KK = kind === '1차' ? 'WRONG NOTE · 1차 오답노트' : `SIMILAR · ${kind} 유사문항`;
     const date = today();
     const byBook = [];
     rows.forEach((x) => { let g = byBook.find((y) => y.title === x.w.title); if (!g) byBook.push(g = { title: x.w.title, xs: [] }); g.xs.push(x); });
     let n = 0;
     const sections = [];
-    if (cover) sections.push({ type: 'cover', preset: cover, kicker: 'WRONG NOTE · 1차 오답노트', title: `${student.name}\n오답노트`, subtitle: `${scopeName ? scopeName + ' · ' : ''}${byBook.map((g) => g.title).join(' · ')} · ${date}` });
+    if (cover) sections.push({ type: 'cover', preset: cover, kicker: KK, title: `${student.name}\n${kind === '1차' ? '오답노트' : '유사문항'}`, subtitle: `${scopeName ? scopeName + ' · ' : ''}${byBook.map((g) => g.title).join(' · ')} · ${date}` });
     const groups = []; const sols = [];
     for (const g of byBook) {
       const items = g.xs.map((x) => {
         n += 1; x.n = n;
         const it = x.it; const chk = it.aiSol?.check;
-        const src = `${g.title} · ${x.w.label} ${x.w.no}번 · ${it.page || x.w.page || ''}쪽${x.w.cause ? ' · 원인 ' + x.w.cause : ''}${x.q === 'ai' ? ' · AI 타이핑' : ''}${x.s === 'ai' && chk?.match === false ? ' · GPT 답 ' + chk.gptAnswer + ' 확인 필요' : ''}`;
-        const base = { no: n, tag: `${shortLabel(x.w.label)} · ${x.w.no}번`, src };
+        const src = `${x.w.from ? '← 1차 ' + x.w.from + '번 · ' : ''}${x.w.gid ? 'AI 변형 문항' + (it.aiSol?.check?.match ? ' (두 번 풀어 확인)' : ' · 확인 필요') : `${x.w.btitle || g.title} · ${x.w.label} ${x.w.no}번 · ${it.page || x.w.page || ''}쪽`}${x.w.cause ? ' · 원인 ' + x.w.cause : ''}${x.q === 'ai' ? ' · AI 타이핑' : ''}${x.s === 'ai' && chk?.match === false ? ' · GPT 답 ' + chk.gptAnswer + ' 확인 필요' : ''}`;
+        const base = { no: n, tag: x.w.gid ? shortLabel(x.w.label) : `${shortLabel(x.w.label)} · ${x.w.no}번`, src };
         return x.q === 'crop' && it.crop ? { ...base, stem: '', figure: { img: it.crop.img, w: it.crop.w, h: it.crop.h, crop: true } }
           : { ...base, stem: it.stem, choices: it.choices, box: it.box, figure: it.figure, pts: it.pts };
       });
-      sections.push({ type: 'sheet', chip: '1차 오답', kick: 'WRONG NOTE · 1차 오답노트', title: g.title, unit: `${student.name} · ${scopeName ? scopeName + ' · ' : ''}${date} · ${items.length}문항`, perPage, items });
+      sections.push({ type: 'sheet', chip: kind === '1차' ? '1차 오답' : kind, kick: KK, title: kind === '1차' ? g.title : `${kind} 유사문항`, unit: `${student.name} · ${scopeName ? scopeName + ' · ' : ''}${date} · ${items.length}문항`, perPage, items });
       groups.push({ title: g.title, nos: items.map((it) => it.no), rows: [{ label: '정답', vals: g.xs.map((x) => x.it.answer || x.it.aiSol?.answer || x.it.answerAI || '해설 참고') }] });
       g.xs.forEach((x) => {
         const answer = x.it.answer || x.it.aiSol?.answer || x.it.answerAI || '';
@@ -640,9 +643,11 @@ export function createWrong(ctx) {
     }
     sections.push({ type: 'answers', groups });
     if (withSol && sols.length) sections.push({ type: 'solutions', items: sols });
-    return { meta: { title: `${student.name} 1차 오답노트`, kick: 'WRONG NOTE · 1차 오답노트', grade: student.grade || '', footer: `${student.name} · 1차 오답노트`, audience }, sections };
+    return { meta: { title: `${student.name} ${KL}`, kick: KK, grade: student.grade || '', footer: `${student.name} · ${KL}`, audience }, sections };
   }
   const shortLabel = (s) => String(s || '').replace(/\s*-\s*\d+\s*레벨/, '').replace(/^[^/]+\//, '');
 
-  return { entry, noteSetup, makeNote, removeBook, progress, catalog, bookOf, retryItem, prepOutline, printSheet, editSheet, deleteSheet };
+  return { entry, noteSetup, makeNote, removeBook, progress, catalog, bookOf, retryItem, prepOutline, printSheet, editSheet, deleteSheet,
+    // 2차 유사문항에서 씀
+    internals: { outlineOf, openBookPdf, ensureFolders, labelsOf, prepItem, loadSheet, buildDoc, saveStudent, logUsage, aiCall, isScan, itemId, unitName, shortLabel } };
 }

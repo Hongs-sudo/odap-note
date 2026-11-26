@@ -34,6 +34,13 @@ export function problemBox(pt, no) {
   return { x0: Math.max(0, x0), y0: Math.max(0, y0), x1: Math.min(W, x1), y1: Math.min(H, y1) };
 }
 
+// 번호 no 문항의 글자 (유사문항 찾기용, 그림 속 글자는 빠질 수 있음)
+export function problemText(pt, no) {
+  const b = problemBox(pt, no); if (!b) return '';
+  const inside = pt.items.filter((i) => i.x >= b.x0 - 2 && i.x <= b.x1 && i.y >= b.y0 && i.y <= b.y1 + 2);
+  return lines(inside, pt.W, false).map((l) => l.text).join(' ').replace(/\s+/g, ' ').trim().slice(0, 900);
+}
+
 // 쪽 그림 캐시 (최근 3쪽)
 const pageCache = [];
 async function pageCanvas(pdf, n) {

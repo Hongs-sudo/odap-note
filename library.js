@@ -208,6 +208,15 @@ export function createLibrary(ctx) {
           const t = x.data(); const m = st.meta[t.bookId];
           // 오답노트에서 빠진 문항 다시 시도
           if (t.task === 'item') { if (!ctx.itemTask) continue; return { id: x.id, ref: x.ref, title: t.title, task: t, run: ctx.itemTask(t) }; }
+          // 유사문항 시험 준비: 문항 모으기(pool)·단원·난이도 표시(tag)
+          if (ctx.extraTasks?.[t.task]) {
+            if (t.label) {
+              const r1 = st.roots.find((rr) => rr.label === t.label);
+              if (!r1) { await fs.updateDoc(x.ref, { status: 'waiting-folder' }); continue; }
+              if ((await F.permission(r1)) !== 'granted') return { stop: `${r1.label} 폴더 허락 필요 (맨 위 노란 띠의 "폴더 다시 연결"을 누르고 "방문할 때마다 허용"을 고르세요)` };
+            }
+            return { id: x.id, ref: x.ref, title: t.title, task: t, run: ctx.extraTasks[t.task](t) };
+          }
           if (t.task === 'outline') {
             if (!ctx.outlineTask || m?.outline?.v === 2) { await fs.updateDoc(x.ref, { status: 'done', at: Date.now() }); continue; }
             const r0 = st.roots.find((rr) => rr.label === t.label);
@@ -229,6 +238,7 @@ export function createLibrary(ctx) {
     },
     saveResult: async (task, res) => {
       if (res.error) { await fs.updateDoc(task.ref, { status: 'error', error: res.error, at: Date.now() }); return; }
+      if (res.kind === 'pool' || res.kind === 'tag') { await fs.updateDoc(task.ref, { status: res.more ? 'queued' : 'done', at: Date.now(), ...(res.skipped ? { note: res.skipped } : {}) }); return; }
       if (res.kind === 'item' || res.kind === 'outline') { await fs.updateDoc(task.ref, { status: 'done', at: Date.now() }); if (res.kind === 'outline') st.meta[task.task.bookId] = { ...(st.meta[task.task.bookId] || {}), outline: { v: 2 } }; return; }
       if (res.kind === 'toc') {
         await fs.setDoc(ref('catalogBooks', task.task.bookId), { units: res.count, toc: res.units, unitsSource: 'ai', unitsAt: Date.now() }, { merge: true });

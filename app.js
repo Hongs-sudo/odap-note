@@ -15,9 +15,10 @@ import { createWrong } from './wrong.js';
 import { localDay } from './analysis.js';
 import * as FOLD from './folders.js';
 import { createSetBuilder } from './sets.js';
+import { createSimilar } from './similar.js';
 
 // 앱 버전: 고칠 때마다 올림. 연결 설정에서 지금 쓰는 버전과 서버의 최신 버전을 비교해 보여 줌
-const APP_VERSION = '2026.11.26-7';
+const APP_VERSION = '2026.11.26-8';
 // ---------- 공통 ----------
 const $ = (s) => document.querySelector(s);
 const main = $('#main');
@@ -186,7 +187,7 @@ function listen() {
   }, (err) => toast(`불러오기 오류: ${err.message}`)));
   sub('bookSets', 'sets', 'createdAt');
   // 원장: 선생님 목록 (학생 탭의 선생님별 보기·담당 표시)
-  if (S.role === 'owner') S.unsub.push(onSnapshot(col('members'), (snap) => { S.members = snap.docs.map((d) => ({ uid: d.id, ...d.data() })); if (!modal.open && S.view === 'students') render(); }, () => {}));
+  if (S.role === 'owner') S.unsub.push(onSnapshot(col('members'), (snap) => { S.members = snap.docs.map((d) => ({ uid: d.id, ...d.data() })); if (!modal.open && (S.view === 'students' || S.view === 'similar')) render(); }, () => {}));
   sub('books', 'books', 'order');
   // 선생님 계정은 본인 담당 학생만 불러옵니다 (보안 규칙과 맞춤)
   const sq = S.role === 'owner'
@@ -204,6 +205,7 @@ function lib() {
     main: () => main, toast, db, aid: () => S.aid, api: ai, openModal, closeModal,
     itemTask: (t) => async () => wr().retryItem(t),
     outlineTask: (t) => async () => wr().prepOutline(t),
+    extraTasks: { pool: (t) => async () => si().runPool(t), tag: (t) => async () => si().runTag(t) },
     fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, query, where, orderBy, limit, updateDoc, increment, arrayUnion, deleteField },
   });
   return LIB;
@@ -215,6 +217,15 @@ function wr() {
     fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, updateDoc, deleteDoc, increment, arrayUnion },
   });
   return WR;
+}
+let SI = null;
+function si() {
+  SI ||= createSimilar({
+    W: wr, db, aid: () => S.aid, uid: () => S.user.uid, role: () => S.role, toast, openModal, closeModal,
+    students: () => S.students, sets: () => S.sets, groups: studentGroups, filterChips,
+    fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, updateDoc, deleteDoc, query, where, limit, increment },
+  });
+  return SI;
 }
 let SB = null;
 function sb() {
@@ -229,6 +240,7 @@ function render() {
   if (S.view === 'books') renderBooks();
   else if (S.view === 'catalog') lib().show();
   else if (S.view === 'students') renderStudents();
+  else if (S.view === 'similar') { if (!catalogReady) wr().catalog().then(() => { catalogReady = true; }).catch(() => {}); si().render().catch((e) => toast(e.message)); }
   else renderSettings();
 }
 
@@ -408,20 +420,23 @@ let catalogReady = false;
 // 담당 선생님 이름: 원장은 "○○ 원장", 선생님은 "○○T"
 const teacherName = (uid) => { const m = S.members.find((x) => x.uid === uid); if (!m) return '담당 없음'; const n = m.name || m.email || '이름 없음'; return m.role === 'owner' ? `${n} 원장` : /T$|선생님$/.test(n) ? n : `${n}T`; };
 const tFilterGet = () => { try { return localStorage.getItem('odap-tfilter') || 'all'; } catch { return 'all'; } };
+// 원장 화면: 선생님별 보기 버튼 (학생 탭·유사문항 탭)
+function filterChips(list) {
+  if (S.role !== 'owner' || !S.members.length) return { chips: '', filtered: list };
+  const known = new Set(S.members.map((m) => m.uid));
+  const opts = [['all', '전체', S.students.length], ...[...S.members].sort((a, b) => (a.role === 'owner' ? -1 : b.role === 'owner' ? 1 : String(a.name || '').localeCompare(String(b.name || ''), 'ko')))
+    .map((m) => [m.uid, teacherName(m.uid), S.students.filter((x) => x.teacherUid === m.uid).length])];
+  const orphan = S.students.filter((x) => !known.has(x.teacherUid)).length;
+  if (orphan) opts.push(['none', '담당 없음', orphan]);
+  let f = tFilterGet(); if (!opts.some((o) => o[0] === f)) f = 'all';
+  const filtered = f === 'all' ? list : f === 'none' ? list.filter((x) => !known.has(x.teacherUid)) : list.filter((x) => x.teacherUid === f);
+  const chips = `<div class="row" style="flex-wrap:wrap;gap:6px;margin:6px 0 4px">${opts.map(([v, l, n]) => `<button class="${v === f ? 'primary' : 'ghost'} small" data-a="tFilter" data-id="${v}">${esc(l)} <span style="opacity:.75">${n}</span></button>`).join('')}</div>`;
+  return { chips, filtered };
+}
 function renderStudents() {
   const owner = S.role === 'owner';
-  let mine = owner ? S.students : S.students.filter((s) => s.teacherUid === S.user.uid);
-  let chips = '';
-  if (owner && S.members.length) {
-    const known = new Set(S.members.map((m) => m.uid));
-    const opts = [['all', '전체', S.students.length], ...[...S.members].sort((a, b) => (a.role === 'owner' ? -1 : b.role === 'owner' ? 1 : String(a.name || '').localeCompare(String(b.name || ''), 'ko')))
-      .map((m) => [m.uid, teacherName(m.uid), S.students.filter((x) => x.teacherUid === m.uid).length])];
-    const orphan = S.students.filter((x) => !known.has(x.teacherUid)).length;
-    if (orphan) opts.push(['none', '담당 없음', orphan]);
-    let f = tFilterGet(); if (!opts.some((o) => o[0] === f)) f = 'all';
-    mine = f === 'all' ? mine : f === 'none' ? mine.filter((x) => !known.has(x.teacherUid)) : mine.filter((x) => x.teacherUid === f);
-    chips = `<div class="row" style="flex-wrap:wrap;gap:6px;margin:6px 0 4px">${opts.map(([v, l, n]) => `<button class="${v === f ? 'primary' : 'ghost'} small" data-a="tFilter" data-id="${v}">${esc(l)} <span style="opacity:.75">${n}</span></button>`).join('')}</div>`;
-  }
+  const base = owner ? S.students : S.students.filter((s) => s.teacherUid === S.user.uid);
+  const { chips, filtered: mine } = filterChips(base);
   if (!catalogReady) wr().catalog().then(() => { catalogReady = true; if (S.view === 'students' && !modal.open) render(); }).catch(() => {});
   main.innerHTML = `<div class="row between"><h2>학생</h2><button class="primary" data-a="newStudent">+ 학생 등록</button></div>${chips}
     ${mine.length ? '' : '<div class="empty">학생을 등록한 뒤 <b>오답 입력</b>을 누르세요. 교재는 오답 입력 화면에서 찾아 고르면 자동으로 이 학생 교재로 들어갑니다.</div>'}
