@@ -160,6 +160,38 @@ export function createLibrary(ctx) {
     ctx.toast(`단원 수 분석 대기 ${todo.length}권 (중2-2 내신대비 ${first}권부터)` + (skipped ? ` · 시험지 등 ${skipped}건 제외` : ''));
   }
 
+  // 매일 밤 처음 한 번: 학생에게 배정된 교재를 맨 앞으로 (최근에 오답을 입력한 학생의 교재일수록 앞)
+  //   0 학생 교재 · 1 폴더 세트 교재 · 2 다른 중등 · 3 나머지
+  //   학생 교재 중 구역·정답을 아직 안 읽은 교재는 "구역 미리 읽기"(outline) 작업을 넣음
+  let prioAt = 0;
+  const qFileOf = (m) => { const pdfs = (m.files || []).filter((f) => f.ext === 'pdf'); return pdfs.find((f) => f.role === '본책' && f.audience !== '교사용') || pdfs.find((f) => f.role === '본책'); };
+  async function reprioritize() {
+    await loadMeta();
+    const studs = (await fs.getDocs(col('students'))).docs.map((d) => d.data());
+    const last = {}; const assigned = new Set();
+    for (const s2 of studs) {
+      (s2.catalogIds || []).forEach((id) => assigned.add(id));
+      (s2.records || []).forEach((r) => { if (r.bookId) last[r.bookId] = Math.max(last[r.bookId] || 0, r.at || 0); });
+    }
+    const rankOf = (id) => 1e13 - (last[id] || 0);
+    const prio = (id) => { const m = st.meta[id] || {}; return assigned.has(id) ? 0 : m.source === 'folder-set' ? 1 : String(m.grade || '').startsWith('중') ? 2 : 3; };
+    let batch = fs.writeBatch(db), n = 0; const step = async () => { if (++n % 400 === 0) { await batch.commit(); batch = fs.writeBatch(db); } };
+    for (const id of assigned) {
+      const m = st.meta[id]; if (!m || m.retired || m.outline?.v === 2) continue;
+      const f = qFileOf(m); if (!f) continue;
+      batch.set(ref('analysisQueue', 'out_' + id), { task: 'outline', bookId: id, title: m.title, label: f.label, rel: f.rel, status: 'queued', priority: 0, rank: rankOf(id), createdAt: Date.now() }, { merge: true });
+      await step();
+    }
+    const q = await fs.getDocs(fs.query(col('analysisQueue'), fs.where('status', '==', 'queued')));
+    for (const d of q.docs) {
+      const t = d.data(); if (t.task !== 'toc') continue;
+      const p = prio(t.bookId), rk = rankOf(t.bookId);
+      if (t.priority !== p || t.rank !== rk) { batch.update(d.ref, { priority: p, rank: rk }); await step(); }
+    }
+    await batch.commit();
+    prioAt = Date.now();
+  }
+
   const runner = createRunner({
     api: ctx.api,
     getSettings: async () => (await fs.getDoc(ref('settings', 'nightly'))).data() || {},
@@ -167,14 +199,22 @@ export function createLibrary(ctx) {
     nextTask: async () => {
       // 프로그램을 켠 뒤 교재 정리 탭을 한 번도 안 열었어도 폴더·교재 정보를 직접 불러옴
       if (!st.roots.length) await refreshRoots();
+      if (Date.now() - prioAt > 6 * 3600_000) await reprioritize(); // 밤마다 한 번 순서 다시 정하기
       if (!Object.keys(st.meta).length) await loadMeta();
       // 색인 없이 쓰려고 '상태 + 우선순위' 같음 조건으로만 차례대로 찾음
       for (let p = 0; p <= 3; p++) {
         const s = await fs.getDocs(fs.query(col('analysisQueue'), fs.where('status', '==', 'queued'), fs.where('priority', '==', p), fs.limit(30)));
-        for (const x of [...s.docs].sort((a, b) => (a.data().createdAt || 0) - (b.data().createdAt || 0))) {
+        for (const x of [...s.docs].sort((a, b) => (a.data().rank ?? 1e13) - (b.data().rank ?? 1e13) || (a.data().createdAt || 0) - (b.data().createdAt || 0))) {
           const t = x.data(); const m = st.meta[t.bookId];
           // 오답노트에서 빠진 문항 다시 시도
           if (t.task === 'item') { if (!ctx.itemTask) continue; return { id: x.id, ref: x.ref, title: t.title, task: t, run: ctx.itemTask(t) }; }
+          if (t.task === 'outline') {
+            if (!ctx.outlineTask || m?.outline?.v === 2) { await fs.updateDoc(x.ref, { status: 'done', at: Date.now() }); continue; }
+            const r0 = st.roots.find((rr) => rr.label === t.label);
+            if (!r0) { await fs.updateDoc(x.ref, { status: 'waiting-folder' }); continue; }
+            if ((await F.permission(r0)) !== 'granted') return { stop: `${r0.label} 폴더 허락 필요 (맨 위 노란 띠의 "폴더 다시 연결"을 누르고 "방문할 때마다 허용"을 고르세요)` };
+            return { id: x.id, ref: x.ref, title: '구역 미리 읽기 · ' + t.title, task: t, run: ctx.outlineTask(t) };
+          }
           // 학교 시험지로 다시 분류됐거나 이미 단원 수가 있는 교재는 건너뜀
           if (t.task === 'toc' && (m?.kind === '기출·시험지' || isExam(t.title) || m?.units)) { await fs.updateDoc(x.ref, { status: 'skipped' }); continue; }
           const r = st.roots.find((rr) => rr.label === t.label);
@@ -189,7 +229,7 @@ export function createLibrary(ctx) {
     },
     saveResult: async (task, res) => {
       if (res.error) { await fs.updateDoc(task.ref, { status: 'error', error: res.error, at: Date.now() }); return; }
-      if (res.kind === 'item') { await fs.updateDoc(task.ref, { status: 'done', at: Date.now() }); return; }
+      if (res.kind === 'item' || res.kind === 'outline') { await fs.updateDoc(task.ref, { status: 'done', at: Date.now() }); if (res.kind === 'outline') st.meta[task.task.bookId] = { ...(st.meta[task.task.bookId] || {}), outline: { v: 2 } }; return; }
       if (res.kind === 'toc') {
         await fs.setDoc(ref('catalogBooks', task.task.bookId), { units: res.count, toc: res.units, unitsSource: 'ai', unitsAt: Date.now() }, { merge: true });
         await fs.updateDoc(task.ref, { status: 'done', at: Date.now(), count: res.count });

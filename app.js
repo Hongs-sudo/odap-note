@@ -17,7 +17,7 @@ import * as FOLD from './folders.js';
 import { createSetBuilder } from './sets.js';
 
 // 앱 버전: 고칠 때마다 올림. 연결 설정에서 지금 쓰는 버전과 서버의 최신 버전을 비교해 보여 줌
-const APP_VERSION = '2026.11.26-4';
+const APP_VERSION = '2026.11.26-5';
 // ---------- 공통 ----------
 const $ = (s) => document.querySelector(s);
 const main = $('#main');
@@ -35,6 +35,13 @@ if (FIREBASE_CONFIG.apiKey === 'REPLACE_ME') {
   main.innerHTML = `<div class="card"><h2>설정이 필요합니다</h2><p>config.js 파일에 Firebase 설정값과 API 주소를 넣어 주세요. 방법은 SETUP.md 2·4단계에 있습니다.</p></div>`;
   throw new Error('config.js not set');
 }
+
+// 선생님 참여 링크(?join=코드)로 들어오면 코드를 기억해 두고 주소에서는 지움 (로그인 창을 거쳐도 남도록)
+try {
+  const j = new URLSearchParams(location.search).get('join');
+  if (j) { localStorage.setItem('odap-join', j.toUpperCase()); history.replaceState(null, '', location.pathname); }
+} catch { /* 저장 안 되는 브라우저 */ }
+const joinCodeSaved = () => { try { return localStorage.getItem('odap-join') || ''; } catch { return ''; } };
 
 const app = initializeApp(FIREBASE_CONFIG);
 const auth = getAuth(app);
@@ -119,7 +126,7 @@ function renderLogin() {
 function renderJoinOrCreate() {
   $('#academyName').textContent = '';
   main.innerHTML = `<div class="card"><h2>학원 참여 (선생님)</h2><p class="muted small">원장님께 받은 <b>참여 코드</b>를 넣고 신청하세요. 원장님이 승인하면 바로 쓸 수 있습니다.</p>
-      <div class="row"><div style="flex:1"><label class="f">참여 코드</label><input type="text" id="jCode" placeholder="예) K7Q4-M2XP" style="text-transform:uppercase"></div>
+      <div class="row"><div style="flex:1"><label class="f">참여 코드</label><input type="text" id="jCode" placeholder="예) K7Q4-M2XP" value="${esc(joinCodeSaved())}" style="text-transform:uppercase"></div>
         <div style="flex:1"><label class="f">이름</label><input type="text" id="jName" value="${esc(S.user.displayName || '')}" placeholder="예) 김선애"></div></div>
       <div class="row" style="margin-top:12px"><button class="primary" id="jGo">참여 신청</button></div></div>
     <details class="card"><summary class="small muted" style="cursor:pointer">원장님이 처음 설정하는 경우 (학원 새로 만들기)</summary><div id="ownerBox" style="margin-top:8px"></div></details>`;
@@ -132,6 +139,7 @@ function renderJoinOrCreate() {
       const aid = c.data().aid;
       await setDoc(doc(db, 'academies', aid, 'joinRequests', S.user.uid), { code, name, email: S.user.email || '', at: Date.now() });
       await setDoc(doc(db, 'users', S.user.uid), { pendingAcademyId: aid, pendingName: c.data().academyName || '' }, { merge: true });
+      try { localStorage.removeItem('odap-join'); } catch { /* 무시 */ }
       renderPending(aid, c.data().academyName || '');
     } catch (e) { toast('신청하지 못했습니다: ' + e.message); }
   };
@@ -193,6 +201,7 @@ function lib() {
   LIB ||= createLibrary({
     main: () => main, toast, db, aid: () => S.aid, api: ai, openModal, closeModal,
     itemTask: (t) => async () => wr().retryItem(t),
+    outlineTask: (t) => async () => wr().prepOutline(t),
     fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, query, where, orderBy, limit, updateDoc, increment, arrayUnion, deleteField },
   });
   return LIB;
@@ -399,7 +408,7 @@ function renderStudents() {
   if (!catalogReady) wr().catalog().then(() => { catalogReady = true; if (S.view === 'students' && !modal.open) render(); }).catch(() => {});
   main.innerHTML = `<div class="row between"><h2>학생</h2><button class="primary" data-a="newStudent">+ 학생 등록</button></div>
     ${mine.length ? '' : '<div class="empty">학생을 등록한 뒤 <b>오답 입력</b>을 누르세요. 교재는 오답 입력 화면에서 찾아 고르면 자동으로 이 학생 교재로 들어갑니다.</div>'}
-    ${mine.map((s) => {
+    ${studentGroups(mine).map(([g, list]) => `<h3 style="margin:18px 0 6px;color:var(--green)">${esc(g)} <span class="muted small">· ${list.length}명</span></h3>${list.map((s) => {
       const books = (s.catalogIds || []).map((id) => wr().bookOf(id)).filter(Boolean);
       const recs = [...(s.records || [])].sort((a, b) => b.at - a.at);
       const prog = wr().progress(s);
@@ -413,7 +422,24 @@ function renderStudents() {
         ${recs.length ? `<details style="margin-top:6px"><summary class="small muted" style="cursor:pointer">입력 기록 ${recs.length}건</summary>${recs.map((r) => `<div class="rec"><span style="flex:1"><b>${new Date(r.at).toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' })}</b> · ${esc(r.title)} · ${esc(r.type || '')} · <span style="color:var(--red)">오답 ${r.wrongs.length}</span>${r.wrongs.length ? ` <span class="muted">(${esc(r.wrongs.slice(0, 10).map((w) => (w.label ? w.label.replace(/\s*-\s*\d+\s*레벨/, '').replace(/^[^/]+\//, '') + ' ' : '') + w.no).join(', '))}${r.wrongs.length > 10 ? ' …' : ''})</span>` : ''}</span>
           <button class="ghost small danger" data-a="delRec" data-id="${s.id}" data-key="${r.id}" title="기록 지우기">×</button></div>`).join('')}</details>` : ''}
       </div>`;
-    }).join('')}`;
+    }).join('')}`).join('')}`;
+}
+
+// 학생 탭: 학년별(중1 → 중2 → 중3 → 고등 → 학년 미입력) · 이름 가나다순
+function gradeRank(g) {
+  const t = String(g || '').replace(/\s+/g, '');
+  if (!t) return [99, '학년 미입력'];
+  if (/고|^[456]$/.test(t)) { const n = (t.match(/[1-3]/) || [])[0]; return [10 + Number(n || 0), n ? `고${n}` : '고등']; }
+  const n = (t.match(/[1-3]/) || [])[0];
+  if (n && /중|^[1-3]$|^[1-3]학년/.test(t)) return [Number(n), `중${n}`];
+  if (/초|^[1-6]학년/.test(t)) return [0, '초등'];
+  return [50, t];
+}
+function studentGroups(list) {
+  const m = new Map();
+  for (const s of list) { const [r, label] = gradeRank(s.grade); const k = r + '|' + label; if (!m.has(k)) m.set(k, { r, label, list: [] }); m.get(k).list.push(s); }
+  return [...m.values()].sort((a, b) => a.r - b.r || a.label.localeCompare(b.label, 'ko'))
+    .map((x) => [x.label, x.list.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ko'))]);
 }
 
 function studentForm(s = {}) {
@@ -479,9 +505,9 @@ async function renderNightly() {
   const s = (await getDoc(ref('settings', 'nightly'))).data() || { enabled: false, start: '02:00', end: '06:00', dailyBudgetUSD: 5 };
   const u = (await getDoc(ref('aiUsage', localDay()))).data() || {};
   const cnt = async (...w) => { try { return (await getCountFromServer(query(col('analysisQueue'), ...w))).data().count; } catch { return '?'; } };
-  const [qToc, qItem, qWait, qErr] = await Promise.all([
+  const [qToc, qItem, qWait, qErr, qOut] = await Promise.all([
     cnt(where('status', '==', 'queued'), where('task', '==', 'toc')), cnt(where('status', '==', 'queued'), where('task', '==', 'item')),
-    cnt(where('status', '==', 'waiting-folder')), cnt(where('status', '==', 'error'))]);
+    cnt(where('status', '==', 'waiting-folder')), cnt(where('status', '==', 'error')), cnt(where('status', '==', 'queued'), where('task', '==', 'outline'))]);
   const runs = (await getDocs(col('aiUsage'))).docs.filter((d) => d.id.startsWith('run_')).map((d) => ({ day: d.id.slice(4), ...d.data() })).sort((a, b) => b.day.localeCompare(a.day)).slice(0, 7);
   const hm = (t) => (t ? new Date(t).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '-');
   box.innerHTML = `<h3>새벽 자동 분석</h3><p class="muted small">정한 시간에 이 PC에서 오답노트 앱이 열려 있으면 대기 목록을 쉬지 않고 이어서 처리합니다. 앱 창은 최소화하거나 가리지 말고 띄워 두세요(화면 꺼짐은 괜찮음). PC 절전은 꺼 두세요.</p>
@@ -489,7 +515,8 @@ async function renderNightly() {
       <input type="time" id="nStart" value="${s.start}" style="width:auto"> ~ <input type="time" id="nEnd" value="${s.end}" style="width:auto">
       <span class="small">하루 AI 예산 $</span><input type="number" id="nBudget" min="0" step="1" value="${s.dailyBudgetUSD ?? 5}" style="width:80px">
       <button class="primary small" id="nSave">저장</button><button class="ghost small" id="nTest">지금 1건 시험 실행</button></div>
-    <div class="kv" style="margin-top:10px"><span class="muted">대기 중</span><span>단원 수 분석 ${qToc}권 · 빠진 문항 다시 시도 ${qItem}건${qWait ? ` · 폴더 연결 필요 ${qWait}건` : ''}${qErr ? ` · 오류 ${qErr}건` : ''}</span>
+    <div class="kv" style="margin-top:10px"><span class="muted">대기 중</span><span>${qOut ? `학생 교재 구역 미리 읽기 ${qOut}권 · ` : ''}단원 수 분석 ${qToc}권 · 빠진 문항 다시 시도 ${qItem}건${qWait ? ` · 폴더 연결 필요 ${qWait}건` : ''}${qErr ? ` · 오류 ${qErr}건` : ''}</span>
+      <span class="muted">학생 교재</span><span id="nReady" class="small muted">확인 중…</span>
       <span class="muted">오늘 AI 사용</span><span>$${(u.usd || 0).toFixed(2)} · ${u.calls || 0}회 <span class="muted small">(${localDay()} 0시부터)</span></span></div>
     <h3 style="margin-top:14px">최근 새벽 분석 기록</h3>
     ${runs.length ? `<table class="small" style="width:100%;border-collapse:collapse;margin-top:6px"><tr style="background:var(--green-bg)"><th style="text-align:left;padding:4px">날짜</th><th>시작~끝</th><th>처리</th><th>비용</th><th style="text-align:left">멈춘 이유</th></tr>
@@ -501,6 +528,11 @@ async function renderNightly() {
           ${(r.items || []).map((x) => `<div>✓ ${esc(x)}</div>`).join('')}</div></details></td></tr>` : ''}`; }).join('')}</table>
       ${runs[0]?.events?.some((x) => /잠듦|가려지거나/.test(x)) ? '<p class="small" style="color:var(--red);margin:6px 0 0">새벽에 앱이 잠든 기록이 있습니다. PC 절전 모드를 "안 함"으로 두고, 앱 창은 최소화하거나 다른 창으로 가리지 말고 띄워 두세요 (화면 꺼짐은 괜찮음).</p>' : ''}`
       : '<p class="muted small">아직 기록이 없습니다. 새벽 분석이 한 번이라도 돌면 여기에 날짜별로 남습니다. 오늘 밤 이후에도 비어 있으면 앱이 닫혀 있었거나 PC가 절전 상태였던 것입니다.</p>'}`;
+  wr().catalog(true).then((list) => {
+    const ids = [...new Set(S.students.flatMap((x) => x.catalogIds || []))].filter((id) => wr().bookOf(id) && !wr().bookOf(id).retired);
+    const ok = ids.filter((id) => wr().bookOf(id).outline?.v === 2).length;
+    const el = document.getElementById('nReady'); if (el) el.innerHTML = `${ids.length}권 중 <b>구역·정답 준비 끝 ${ok}권</b>${ids.length - ok ? ` · 남은 ${ids.length - ok}권은 오늘 밤 가장 먼저 읽습니다` : ''}`;
+  }).catch(() => {});
   document.getElementById('nSave').onclick = async () => {
     await setDoc(ref('settings', 'nightly'), { enabled: nOn.checked, start: nStart.value, end: nEnd.value, dailyBudgetUSD: Number(nBudget.value) || 0 }, { merge: true });
     toast('새벽 분석 설정 저장');
@@ -517,6 +549,7 @@ async function renderNightly() {
 }
 
 // ---------- 선생님 관리 (원장) ----------
+const joinLink = (code) => `${location.origin}${location.pathname.replace(/index\.html$/, '')}?join=${encodeURIComponent(code)}`;
 const newCode = () => { const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let c = ''; for (let i = 0; i < 8; i++) c += A[Math.floor(Math.random() * A.length)] + (i === 3 ? '-' : ''); return c; };
 async function renderTeachers() {
   const box = document.getElementById('teachers'); if (!box) return;
@@ -525,10 +558,15 @@ async function renderTeachers() {
   const mem = (await getDocs(col('members'))).docs.map((d) => ({ uid: d.id, ...d.data() }));
   box.innerHTML = `<h3>선생님</h3><p class="muted small">선생님께 아래 <b>참여 코드</b>와 앱 주소를 알려 주세요. 선생님이 신청하면 여기에 나타나고, <b>승인</b>을 누르면 바로 쓸 수 있습니다(AI 기능 허용 포함).</p>
     <div class="row"><span class="small">참여 코드</span> ${ac.joinCode ? `<b style="font-size:20px;letter-spacing:.08em">${esc(ac.joinCode)}</b>` : '<span class="muted small">아직 없음</span>'} <button class="ghost small" id="tCode">${ac.joinCode ? '새 코드로 바꾸기' : '참여 코드 만들기'}</button></div>
+    ${ac.joinCode ? `<div class="row" style="margin-top:6px"><span class="small">참여 링크</span><input type="text" readonly id="tLink" value="${esc(joinLink(ac.joinCode))}" style="flex:1;font-size:13px" onclick="this.select()"><button class="primary small" id="tCopyLink">링크 복사</button><button class="ghost small" id="tCopyMsg">안내 문구 복사</button></div>
+      <p class="muted small" style="margin:4px 0 0">안내 문구를 카톡에 붙여 넣어 보내세요. 선생님이 링크를 열면 참여 코드가 미리 채워집니다.</p>` : ''}
     ${reqs.length ? `<h3 style="margin-top:12px">승인 기다리는 신청 ${reqs.length}건</h3>${reqs.map((r) => `<div class="row between" style="border-top:1px solid var(--line);padding:6px 0"><span><b>${esc(r.name)}</b> <span class="muted small">${esc(r.email || '')} · ${new Date(r.at).toLocaleString('ko-KR')}</span></span>
       <span class="row"><button class="primary small" data-tok="${r.uid}">승인</button><button class="ghost small danger" data-tno="${r.uid}">거절</button></span></div>`).join('')}` : ''}
     <h3 style="margin-top:12px">구성원 ${mem.length}명</h3>${mem.map((m) => `<div class="row between" style="border-top:1px solid var(--line);padding:6px 0"><span><b>${esc(m.name || '')}</b> <span class="badge ${m.role === 'owner' ? 'gold' : ''}">${m.role === 'owner' ? '원장' : '선생님'}</span> <span class="muted small">${esc(m.email || '')}</span></span>
       ${m.role === 'owner' ? '' : `<button class="ghost small danger" data-tout="${m.uid}">빼기</button>`}</div>`).join('')}`;
+  const copy = async (text, what) => { try { await navigator.clipboard.writeText(text); toast(`${what}를 복사했습니다. 카톡에 붙여 넣으세요`); } catch { const i = document.getElementById('tLink'); i?.select(); toast('복사가 막혀 있습니다. 링크 칸을 선택해 Ctrl+C를 누르세요'); } };
+  document.getElementById('tCopyLink')?.addEventListener('click', () => copy(joinLink(ac.joinCode), '참여 링크'));
+  document.getElementById('tCopyMsg')?.addEventListener('click', () => copy(`[수학도서관 오답노트] 선생님 참여 안내\n아래 링크를 PC 크롬에서 열고, 본인 구글 계정으로 로그인한 뒤 이름을 넣고 [참여 신청]을 눌러 주세요. 원장님이 승인하면 바로 쓸 수 있습니다.\n${joinLink(ac.joinCode)}\n사용 문의는 홍재화원장에게 문의해주세요.`, '안내 문구'));
   document.getElementById('tCode').onclick = async () => {
     if (ac.joinCode && !confirm('새 코드로 바꾸면 예전 코드로는 신청할 수 없습니다. 바꿀까요?')) return;
     const code = newCode();

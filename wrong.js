@@ -492,6 +492,15 @@ export function createWrong(ctx) {
     return { img: c.toDataURL('image/png'), w: Math.round(sw), h: Math.round(sh) };
   }
   // 새벽 분석에서 실패 문항 이어서 처리
+  // 새벽 분석: 학생 교재의 구역·정답을 미리 읽어 둠 (AI 비용 없음)
+  async function prepOutline(t) {
+    await catalog();
+    const b = bookOf(t.bookId); if (!b) throw new Error('교재 정보를 찾지 못했습니다');
+    const fresh = (await fs.getDoc(ref('catalogBooks', b.id))).data();
+    if (fresh?.outline?.v === 2) { b.outline = fresh.outline; return { kind: 'outline' }; }
+    const o = await outlineOf(b, await F.listRoots());
+    return { kind: 'outline', sections: o.sections.length };
+  }
   async function retryItem(t) {
     await catalog();
     const roots = await F.listRoots();
@@ -631,5 +640,5 @@ export function createWrong(ctx) {
   }
   const shortLabel = (s) => String(s || '').replace(/\s*-\s*\d+\s*레벨/, '').replace(/^[^/]+\//, '');
 
-  return { entry, noteSetup, makeNote, removeBook, progress, catalog, bookOf, retryItem, printSheet, editSheet, deleteSheet };
+  return { entry, noteSetup, makeNote, removeBook, progress, catalog, bookOf, retryItem, prepOutline, printSheet, editSheet, deleteSheet };
 }
