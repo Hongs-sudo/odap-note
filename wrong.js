@@ -55,13 +55,16 @@ export function createWrong(ctx) {
   };
 
   // ---------- 폴더 허락 (버튼을 누른 직후에만 물을 수 있음) ----------
-  async function ensureFolders() {
+  // labels: 이 교재가 쓰는 폴더만 허락을 물음 (모든 폴더를 차례로 물으면 크롬 허락 창이 여러 번 떠서 멈춘 것처럼 보임)
+  // 크롬 허락 창에 답하지 않아도 8초 뒤에는 넘어감
+  async function ensureFolders(labels) {
     const roots = await F.listRoots();
     const need = [];
-    for (const r of roots) if ((await F.permission(r)) !== 'granted') need.push(r);
-    if (need.length) await F.reconnectAll(need);
+    for (const r of roots) if ((!labels || labels.includes(r.label)) && (await F.permission(r)) !== 'granted') need.push(r);
+    if (need.length) await Promise.race([F.reconnectAll(need).catch(() => {}), new Promise((res) => setTimeout(res, 8000))]);
     return roots;
   }
+  const labelsOf = (b) => [...new Set((b?.files || []).map((f) => f.label))];
   async function openBookPdf(b, kind, roots) {
     const f = fileOf(b, kind); if (!f) return null;
     const k = f.label + '|' + f.rel; // 같은 PDF는 한 번만 엶 (정답이 문제 뒤에 붙은 교재)
@@ -106,7 +109,6 @@ export function createWrong(ctx) {
   // ---------- 오답 입력 ----------
   async function entry(student) {
     ctx.openModal('<p class="pad center">교재 목록 불러오는 중…</p>');
-    try { await ensureFolders(); } catch { /* 허락은 교재를 열 때 다시 확인 */ }
     const list = await catalog();
     const mine = (student.catalogIds || []).map(bookOf).filter(Boolean);
     const st = { bid: mine[0]?.id || '', type: '내신대비', picked: {}, solved: new Set(), causes: {}, q: '', fg: defaultGrade(student.grade), fk: '내신대비' };
@@ -176,7 +178,7 @@ export function createWrong(ctx) {
       document.getElementById('wSave').onclick = save;
       if (b) {
         try {
-          const roots = await ensureFolders();
+          const roots = await ensureFolders(labelsOf(b));
           const o = await outlineOf(b, roots, (p, n) => { const g = document.getElementById('wGrid'); if (g && p % 5 === 0) g.innerHTML = `<p class="muted small">교재 구역을 읽는 중… ${p}/${n}쪽</p>`; });
           grid(b, o);
         } catch (e) { document.getElementById('wGrid').innerHTML = `<p class="small" style="color:var(--red)">${esc(e.message)}</p>`; }
@@ -331,9 +333,11 @@ export function createWrong(ctx) {
       <div class="progress" style="margin:10px 0"><div style="width:${Math.round((done / total) * 100)}%"></div></div>
       <p class="small">${done} / ${total}문항 ${extra}</p><div class="muted small" style="max-height:30vh;overflow:auto">${log.slice(-12).map(esc).join('<br>')}</div></div>`);
     let roots;
-    try { roots = await ensureFolders(); } catch (e) { return ctx.toast(e.message); }
-    show(0, wrongs.length);
+    show(0, wrongs.length, '· 교재 폴더 확인 중');
     await catalog();
+    const labels = [...new Set(wrongs.flatMap((w) => labelsOf(bookOf(w.bookId))))];
+    try { roots = await ensureFolders(labels); } catch (e) { return ctx.toast(e.message); }
+    show(0, wrongs.length);
     const t0 = Date.now(); const cost = { usd: 0 }; const rows = [];
     for (let i = 0; i < wrongs.length; i++) {
       const w = wrongs[i];

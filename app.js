@@ -17,7 +17,7 @@ import * as FOLD from './folders.js';
 import { createSetBuilder } from './sets.js';
 
 // 앱 버전: 고칠 때마다 올림. 연결 설정에서 지금 쓰는 버전과 서버의 최신 버전을 비교해 보여 줌
-const APP_VERSION = '2026.11.26-6';
+const APP_VERSION = '2026.11.26-7';
 // ---------- 공통 ----------
 const $ = (s) => document.querySelector(s);
 const main = $('#main');
