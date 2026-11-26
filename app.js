@@ -17,7 +17,7 @@ import * as FOLD from './folders.js';
 import { createSetBuilder } from './sets.js';
 
 // 앱 버전: 고칠 때마다 올림. 연결 설정에서 지금 쓰는 버전과 서버의 최신 버전을 비교해 보여 줌
-const APP_VERSION = '2026.11.26-5';
+const APP_VERSION = '2026.11.26-6';
 // ---------- 공통 ----------
 const $ = (s) => document.querySelector(s);
 const main = $('#main');
@@ -47,7 +47,7 @@ const app = initializeApp(FIREBASE_CONFIG);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-const S = { user: null, aid: null, academy: null, role: null, view: 'books', sets: [], books: [], students: [], unsub: [], uploads: {} };
+const S = { members: [], user: null, aid: null, academy: null, role: null, view: 'books', sets: [], books: [], students: [], unsub: [], uploads: {} };
 const col = (name) => collection(db, 'academies', S.aid, name);
 const ref = (name, id) => doc(db, 'academies', S.aid, name, id);
 
@@ -185,6 +185,8 @@ function listen() {
     if (!modal.open) render();
   }, (err) => toast(`불러오기 오류: ${err.message}`)));
   sub('bookSets', 'sets', 'createdAt');
+  // 원장: 선생님 목록 (학생 탭의 선생님별 보기·담당 표시)
+  if (S.role === 'owner') S.unsub.push(onSnapshot(col('members'), (snap) => { S.members = snap.docs.map((d) => ({ uid: d.id, ...d.data() })); if (!modal.open && S.view === 'students') render(); }, () => {}));
   sub('books', 'books', 'order');
   // 선생님 계정은 본인 담당 학생만 불러옵니다 (보안 규칙과 맞춤)
   const sq = S.role === 'owner'
@@ -403,17 +405,32 @@ async function openFile(key) {
 
 // ---------- 학생 ----------
 let catalogReady = false;
+// 담당 선생님 이름: 원장은 "○○ 원장", 선생님은 "○○T"
+const teacherName = (uid) => { const m = S.members.find((x) => x.uid === uid); if (!m) return '담당 없음'; const n = m.name || m.email || '이름 없음'; return m.role === 'owner' ? `${n} 원장` : /T$|선생님$/.test(n) ? n : `${n}T`; };
+const tFilterGet = () => { try { return localStorage.getItem('odap-tfilter') || 'all'; } catch { return 'all'; } };
 function renderStudents() {
-  const mine = S.role === 'owner' ? S.students : S.students.filter((s) => s.teacherUid === S.user.uid);
+  const owner = S.role === 'owner';
+  let mine = owner ? S.students : S.students.filter((s) => s.teacherUid === S.user.uid);
+  let chips = '';
+  if (owner && S.members.length) {
+    const known = new Set(S.members.map((m) => m.uid));
+    const opts = [['all', '전체', S.students.length], ...[...S.members].sort((a, b) => (a.role === 'owner' ? -1 : b.role === 'owner' ? 1 : String(a.name || '').localeCompare(String(b.name || ''), 'ko')))
+      .map((m) => [m.uid, teacherName(m.uid), S.students.filter((x) => x.teacherUid === m.uid).length])];
+    const orphan = S.students.filter((x) => !known.has(x.teacherUid)).length;
+    if (orphan) opts.push(['none', '담당 없음', orphan]);
+    let f = tFilterGet(); if (!opts.some((o) => o[0] === f)) f = 'all';
+    mine = f === 'all' ? mine : f === 'none' ? mine.filter((x) => !known.has(x.teacherUid)) : mine.filter((x) => x.teacherUid === f);
+    chips = `<div class="row" style="flex-wrap:wrap;gap:6px;margin:6px 0 4px">${opts.map(([v, l, n]) => `<button class="${v === f ? 'primary' : 'ghost'} small" data-a="tFilter" data-id="${v}">${esc(l)} <span style="opacity:.75">${n}</span></button>`).join('')}</div>`;
+  }
   if (!catalogReady) wr().catalog().then(() => { catalogReady = true; if (S.view === 'students' && !modal.open) render(); }).catch(() => {});
-  main.innerHTML = `<div class="row between"><h2>학생</h2><button class="primary" data-a="newStudent">+ 학생 등록</button></div>
+  main.innerHTML = `<div class="row between"><h2>학생</h2><button class="primary" data-a="newStudent">+ 학생 등록</button></div>${chips}
     ${mine.length ? '' : '<div class="empty">학생을 등록한 뒤 <b>오답 입력</b>을 누르세요. 교재는 오답 입력 화면에서 찾아 고르면 자동으로 이 학생 교재로 들어갑니다.</div>'}
     ${studentGroups(mine).map(([g, list]) => `<h3 style="margin:18px 0 6px;color:var(--green)">${esc(g)} <span class="muted small">· ${list.length}명</span></h3>${list.map((s) => {
       const books = (s.catalogIds || []).map((id) => wr().bookOf(id)).filter(Boolean);
       const recs = [...(s.records || [])].sort((a, b) => b.at - a.at);
       const prog = wr().progress(s);
       const total = prog.reduce((a, p) => a + p.total, 0), done = prog.reduce((a, p) => a + p.done, 0);
-      return `<div class="card"><div class="row between"><div><h3>${esc(s.name)}</h3><span class="muted small">${esc(s.grade || '')} ${esc(s.school || '')} · 오답 ${total}개 · 오답노트 완료 ${done} · 남음 ${total - done}</span></div>
+      return `<div class="card"><div class="row between"><div><h3>${esc(s.name)}${owner && S.members.length ? ` <span class="badge" style="font-weight:400">담당 ${esc(teacherName(s.teacherUid))}</span>` : ''}</h3><span class="muted small">${esc(s.grade || '')} ${esc(s.school || '')} · 오답 ${total}개 · 오답노트 완료 ${done} · 남음 ${total - done}</span></div>
         <div class="row"><button class="primary small" data-a="wrongIn" data-id="${s.id}">+ 오답 입력</button>${total ? `<button class="primary small" data-a="makeNote" data-id="${s.id}">오답노트 만들기</button>` : ''}<button class="ghost small" data-a="editStudent" data-id="${s.id}">수정</button></div></div>
         <div class="row" style="margin-top:8px">${books.map((b) => `<span class="badge">${esc(b.title)} <button class="chipx" data-a="dropBook" data-id="${s.id}" data-key="${b.id}" title="이 학생 교재에서 빼기">×</button></span>`).join('') || (catalogReady ? '<span class="muted small">아직 고른 교재 없음</span>' : '')}</div>
         ${prog.length ? `<div style="margin-top:8px">${prog.map((p) => `<div class="prog small"><span style="flex:1">${esc(p.title)}</span><span class="bar"><i style="width:${p.total ? Math.round((p.done / p.total) * 100) : 0}%"></i></span><span>${p.done}/${p.total}</span><span class="muted" style="flex:1.4">${p.left.length ? '남은 단원: ' + esc(p.left.join(', ')) : '모두 오답노트 완료'}</span></div>`).join('')}</div>` : ''}
@@ -448,14 +465,17 @@ function studentForm(s = {}) {
     <label class="f">이름</label><input type="text" id="fName" value="${esc(s.name || '')}">
     <div class="row"><div style="flex:1"><label class="f">학년</label><input type="text" id="fGrade" value="${esc(s.grade || '중2')}"></div>
       <div style="flex:1"><label class="f">학교</label><input type="text" id="fSchool" value="${esc(s.school || '')}"></div></div>
+    ${S.role === 'owner' && S.members.length ? `<label class="f">담당 선생님</label><select id="fTeacher">${S.members.map((m) => `<option value="${m.uid}" ${m.uid === (s.teacherUid || S.user.uid) ? 'selected' : ''}>${esc(teacherName(m.uid))}</option>`).join('')}${s.teacherUid && !S.members.some((m) => m.uid === s.teacherUid) ? '<option value="" selected>담당 없음 (학원에서 빠진 선생님)</option>' : ''}</select>
+      <p class="muted small" style="margin:2px 0 0">담당을 바꾸면 그 선생님 화면에 보이고, 오답 기록·오답노트도 함께 넘어갑니다.</p>` : ''}
     ${s.id ? `<label class="f">사용 교재 (오답 입력 화면에서 찾아 고르면 자동으로 추가됩니다)</label><div class="checks">${ids.map((id) => { const b = wr().bookOf(id); return b ? `<label><input type="checkbox" value="${id}" checked> ${esc(b.title)}</label>` : ''; }).join('') || '<p class="muted small">아직 없음</p>'}</div>` : ''}
     <div class="row between" style="margin-top:16px">${s.id ? '<button class="ghost danger" id="fDel">학생 삭제</button>' : '<span></span>'}
       <div class="row"><button class="ghost" data-a="close">취소</button><button class="primary" id="fSave">저장</button></div></div>`);
   $('#fSave').onclick = async () => {
     const data = { name: $('#fName').value.trim(), grade: $('#fGrade').value.trim(), school: $('#fSchool').value.trim() };
     if (!data.name) return toast('이름을 입력하세요.');
-    if (s.id) { data.catalogIds = [...document.querySelectorAll('.checks input:checked')].map((c) => c.value); await updateDoc(ref('students', s.id), data); }
-    else await addDoc(col('students'), { ...data, catalogIds: [], records: [], sheets: [], teacherUid: S.user.uid, createdAt: serverTimestamp() });
+    const tsel = document.getElementById('fTeacher')?.value;
+    if (s.id) { data.catalogIds = [...document.querySelectorAll('.checks input:checked')].map((c) => c.value); if (tsel) data.teacherUid = tsel; await updateDoc(ref('students', s.id), data); }
+    else await addDoc(col('students'), { ...data, catalogIds: [], records: [], sheets: [], teacherUid: tsel || S.user.uid, createdAt: serverTimestamp() });
     closeModal(); render();
   };
   if (s.id) $('#fDel').onclick = async () => { if (confirm(`${s.name} 학생을 삭제할까요? 오답 기록도 함께 지워집니다.`)) { await deleteDoc(ref('students', s.id)); closeModal(); render(); } };
@@ -698,6 +718,7 @@ document.addEventListener('click', (e) => {
     delRec: () => { e.preventDefault(); delRecord(id, key); },
     recheck: renderSettings,
     sample: () => printSample(b.dataset.aud).catch((er) => toast(er.message)),
+    tFilter: () => { try { localStorage.setItem('odap-tfilter', id); } catch { /* 무시 */ } render(); },
     folderSets: () => sb().start().catch((er) => toast(er.message)),
     folderReset: () => sb().reset().catch((er) => toast(er.message)),
     setAssign: () => sb().assign(S.sets.find((x) => x.id === id), wr().bookOf),
