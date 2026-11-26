@@ -138,17 +138,24 @@ export function createSetBuilder(ctx) {
   const col = (n) => fs.collection(db, 'academies', ctx.aid(), n);
   const ref = (n, id) => fs.doc(db, 'academies', ctx.aid(), n, id);
 
+  // 세트로 만들 폴더 고르기: 연결해 둔 폴더 중에서, 또는 새로 연결 (폴더 이름이 곧 세트의 폴더 이름 — 선생님 PC에서도 같은 이름 폴더를 연결)
   async function pickRoot() {
     const roots = (await F.listRoots()).filter((r) => r.mode === 'sets');
-    if (roots.length) return roots[0];
     return new Promise((resolve) => {
-      ctx.openModal(`<h2>폴더로 세트 만들기 — 폴더 연결</h2>
-        <p class="small">세트로 만들 교재 폴더를 한 번만 연결합니다. 버튼을 누르면 폴더 고르기 창이 열립니다.</p>
-        <div class="card small" style="background:var(--green-bg)">바탕 화면 → <b>수학도서관</b> → <b>중등내신대비</b> → <b>2학기 내신대비교재</b> 폴더를 한 번 눌러 고른 뒤 <b>[폴더 선택]</b> → 크롬이 물으면 <b>[파일 보기]</b>를 누르세요.<div class="muted" style="margin-top:4px">${esc(SET_ROOT.path)}</div></div>
-        <p class="muted small">읽기만 하고 파일은 바꾸지 않습니다. 이 폴더는 "교재 정리"의 폴더 목록에도 보입니다.</p>
-        <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="ghost" data-a="close">취소</button><button class="primary" id="sbPick">폴더 고르기</button></div>`);
+      ctx.openModal(`<h2>폴더로 세트 만들기 — 폴더 고르기</h2>
+        ${roots.length ? `<p class="small">연결해 둔 폴더에서 고르거나, 새 폴더를 연결하세요.</p><div class="list" style="margin-bottom:10px">${roots.map((r) => `<button data-root="${r.id}"><span><b>${esc(r.label)}</b> <span class="muted small">${esc(r.path)}</span></span><span class="small">이 폴더로 →</span></button>`).join('')}</div>` : ''}
+        <div class="card small" style="background:var(--green-bg)">선생님들과 함께 쓰려면 <b>MYBOX(N: 드라이브)</b>에 있는 교재 폴더를 고르세요. 예) N: › 공유 › … › <b>2학기 내신대비교재</b><br>폴더를 한 번 눌러 고른 뒤 <b>[폴더 선택]</b> → 크롬이 물으면 <b>[파일 보기]</b>.</div>
+        <p class="muted small">읽기만 하고 파일은 바꾸지 않습니다. 선생님 PC에서도 <b>같은 이름의 폴더</b>를 연결하면 그대로 쓸 수 있습니다.</p>
+        <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="ghost" data-a="close">취소</button><button class="primary" id="sbPick">새 폴더 연결</button></div>`);
+      document.querySelectorAll('[data-root]').forEach((b) => (b.onclick = () => resolve(roots.find((r) => r.id === b.dataset.root))));
       document.getElementById('sbPick').onclick = async () => {
-        try { resolve(await F.addRoot(SET_ROOT)); } catch (e) { if (e.name !== 'AbortError') ctx.toast(e.message); }
+        try {
+          const rec = await F.addRoot({ label: '', path: '', category: '내신대비', mode: 'sets' });
+          rec.label = rec.handle.name; rec.path = rec.handle.name; await F.updateRoot(rec);
+          const dup = roots.find((r) => r.label === rec.label);
+          if (dup) await F.removeRoot(dup.id); // 같은 이름 폴더를 다시 연결하면 새 위치로 바꿈 (예: 내 PC → MYBOX)
+          resolve(rec);
+        } catch (e) { if (e.name !== 'AbortError') ctx.toast(e.message); }
       };
     });
   }
@@ -191,7 +198,7 @@ export function createSetBuilder(ctx) {
     const byId = Object.fromEntries(all.map((x) => [x.id, x]));
     let batch = fs.writeBatch(db), n = 0, nb = 0, replaced = 0;
     const step = async () => { if (++n % 400 === 0) { await batch.commit(); batch = fs.writeBatch(db); } };
-    const names = {}; const setNames = {};
+    const names = {}; const setNames = {}; const newIds = {};
     const now = Date.now();
     for (const s of sets) {
       const sid = 'fs_' + hash(root.label + '|' + s.key);
@@ -213,7 +220,7 @@ export function createSetBuilder(ctx) {
           await step(); ids.push(id); nb++;
           // 단원 수 분석(새벽): 모의고사·주말모의고사는 목차가 없어 넣지 않음
           if (!/모의고사/.test(b.code) && !old?.units) { batch.set(ref('analysisQueue', 'toc_' + id), { task: 'toc', bookId: id, title: b.title, label: root.label, rel: b.files[0].rel, status: 'queued', createdAt: now, priority: 0 }, { merge: true }); await step(); }
-          setNames[b.files[0].rel.split('/').pop()] = id;
+          setNames[b.files[0].rel.split('/').pop()] = id; newIds[b.files[0].rel] = id;
         }
         groups.push({ name: g.name, ids, quick: g.quick ? { label: g.quick.label, rel: g.quick.rel, name: g.quick.name, size: g.quick.size } : null });
       }
@@ -225,7 +232,19 @@ export function createSetBuilder(ctx) {
     // 폴더 구성이 바뀌어 이제 없는 세트(예: 예전 "중1-2 내신대비")는 지움 — 교재와 학생 기록은 그대로
     let dropped = 0;
     if (keys.length) for (const d of (await fs.getDocs(col('bookSets'))).docs) {
-      const x = d.data(); if (x.source === 'folder' && x.root === root.label && !keys.includes(x.key)) { batch.delete(d.ref); dropped++; await step(); }
+      const x = d.data();
+      const sameFolder = x.root === root.label || String(x.rootPath || '').split('\\').pop() === root.label;
+      if (x.source === 'folder' && sameFolder && (x.root !== root.label || !keys.includes(x.key))) { batch.delete(d.ref); dropped++; await step(); }
+    }
+    // 예전에 다른 이름(예: "내 PC·2학기 내신대비교재")으로 만든 같은 교재 → 학생 교재 목록을 새 교재로 바꿔 줌 (오답 기록은 예전 교재에 그대로)
+    const relOf = (k) => String(k || '').split('|').slice(2).join('|');
+    const remap = {};
+    for (const x of all) if (x.source === 'folder-set' && String(x.key || '').split('|')[1] !== root.label) {
+      const nid = newIds[relOf(x.key)]; if (nid && nid !== x.id) { remap[x.id] = nid; batch.set(ref('catalogBooks', x.id), { retired: true, replacedBy: nid }, { merge: true }); await step(); }
+    }
+    for (const st of ctx.students()) {
+      const ids = st.catalogIds || []; if (!ids.some((id) => remap[id])) continue;
+      batch.update(ref('students', st.id), { catalogIds: [...new Set(ids.map((id) => remap[id] || id))] }); await step();
     }
     // N: 드라이브에 같은 파일(이름 같음)이 있는 교재는 교재 찾기 목록에서 숨김 (이미 고른 학생 기록은 그대로)
     for (const x of all) {

@@ -17,7 +17,7 @@ import * as FOLD from './folders.js';
 import { createSetBuilder } from './sets.js';
 
 // 앱 버전: 고칠 때마다 올림. 연결 설정에서 지금 쓰는 버전과 서버의 최신 버전을 비교해 보여 줌
-const APP_VERSION = '2026.11.26-2';
+const APP_VERSION = '2026.11.26-3';
 // ---------- 공통 ----------
 const $ = (s) => document.querySelector(s);
 const main = $('#main');
@@ -80,16 +80,27 @@ onAuthStateChanged(auth, async (user) => {
   $('#tabs').hidden = true;
   if (!user) return renderLogin();
   const me = await getDoc(doc(db, 'users', user.uid));
-  if (!me.exists() || !me.data().academyId) return renderCreateAcademy();
+  if (!me.exists() || !me.data().academyId) {
+    // 참여 신청한 선생님: 원장님이 승인했으면(구성원 문서가 생겼으면) 바로 학원으로 들어감
+    const pend = me.data()?.pendingAcademyId;
+    if (pend) {
+      const ok = await getDoc(doc(db, 'academies', pend, 'members', user.uid)).then((d) => d.exists()).catch(() => false);
+      if (ok) { await setDoc(doc(db, 'users', user.uid), { academyId: pend, pendingAcademyId: null }, { merge: true }); location.reload(); return; }
+      return renderPending(pend, me.data().pendingName || '');
+    }
+    return renderJoinOrCreate();
+  }
   S.aid = me.data().academyId;
   const [ac, mem] = await Promise.all([getDoc(doc(db, 'academies', S.aid)), getDoc(doc(db, 'academies', S.aid, 'members', user.uid))]);
   if (!mem.exists()) { main.innerHTML = '<div class="card">이 학원의 구성원으로 등록되지 않은 계정입니다. 원장님께 문의하세요.</div>'; return; }
   S.academy = ac.data(); S.role = mem.data().role;
   $('#academyName').textContent = S.academy.name;
   $('#tabs').hidden = false;
+  // 선생님 계정은 교재 정리(폴더 읽기·새벽 분석) 탭을 쓰지 않음
+  document.querySelector('#tabs button[data-view="catalog"]').hidden = S.role !== 'owner';
   listen();
   render();
-  lib().runner.start(); // 새벽 분석: 정해 둔 시간에 프로그램이 열려 있으면 자동 실행
+  if (S.role === 'owner') lib().runner.start(); // 새벽 분석: 원장 PC에서 정해 둔 시간에 프로그램이 열려 있으면 자동 실행
   permBanner();
 });
 
@@ -104,8 +115,41 @@ function renderLogin() {
   };
 }
 
-function renderCreateAcademy() {
-  main.innerHTML = `<div class="card"><h2>처음 설정</h2><p class="muted small">학원 정보를 한 번만 만들면 됩니다. 나중에 선생님 계정을 이 학원에 추가할 수 있습니다.</p>
+// ---------- 선생님 참여 ----------
+function renderJoinOrCreate() {
+  $('#academyName').textContent = '';
+  main.innerHTML = `<div class="card"><h2>학원 참여 (선생님)</h2><p class="muted small">원장님께 받은 <b>참여 코드</b>를 넣고 신청하세요. 원장님이 승인하면 바로 쓸 수 있습니다.</p>
+      <div class="row"><div style="flex:1"><label class="f">참여 코드</label><input type="text" id="jCode" placeholder="예) K7Q4-M2XP" style="text-transform:uppercase"></div>
+        <div style="flex:1"><label class="f">이름</label><input type="text" id="jName" value="${esc(S.user.displayName || '')}" placeholder="예) 김선애"></div></div>
+      <div class="row" style="margin-top:12px"><button class="primary" id="jGo">참여 신청</button></div></div>
+    <details class="card"><summary class="small muted" style="cursor:pointer">원장님이 처음 설정하는 경우 (학원 새로 만들기)</summary><div id="ownerBox" style="margin-top:8px"></div></details>`;
+  $('#jGo').onclick = async () => {
+    const code = $('#jCode').value.trim().toUpperCase().replace(/\s+/g, ''); const name = $('#jName').value.trim();
+    if (!code || !name) return toast('참여 코드와 이름을 넣으세요.');
+    try {
+      const c = await getDoc(doc(db, 'joinCodes', code));
+      if (!c.exists()) return toast('참여 코드가 맞지 않습니다. 원장님께 다시 확인하세요.');
+      const aid = c.data().aid;
+      await setDoc(doc(db, 'academies', aid, 'joinRequests', S.user.uid), { code, name, email: S.user.email || '', at: Date.now() });
+      await setDoc(doc(db, 'users', S.user.uid), { pendingAcademyId: aid, pendingName: c.data().academyName || '' }, { merge: true });
+      renderPending(aid, c.data().academyName || '');
+    } catch (e) { toast('신청하지 못했습니다: ' + e.message); }
+  };
+  renderCreateAcademy($('#ownerBox'));
+}
+function renderPending(aid, name) {
+  main.innerHTML = `<div class="card center pad"><h2>승인 기다리는 중</h2><p>${esc(name || '학원')}에 참여 신청을 보냈습니다.<br>원장님이 승인하면 <b>다시 확인</b>을 누르세요.</p>
+    <div class="row" style="justify-content:center"><button class="primary" id="pCheck">다시 확인</button><button class="ghost" id="pCancel">신청 취소</button></div></div>`;
+  $('#pCheck').onclick = () => location.reload();
+  $('#pCancel').onclick = async () => {
+    await deleteDoc(doc(db, 'academies', aid, 'joinRequests', S.user.uid)).catch(() => {});
+    await setDoc(doc(db, 'users', S.user.uid), { pendingAcademyId: null }, { merge: true }); location.reload();
+  };
+}
+
+function renderCreateAcademy(box) {
+  const target = box || main;
+  target.innerHTML = `<div${box ? '' : ' class="card"'}><h2>처음 설정</h2><p class="muted small">원장님만 한 번 합니다. 선생님은 이 버튼을 누르지 말고 위의 참여 코드로 신청하세요.</p>
     <label class="f">학원 이름</label><input type="text" id="acName" value="수학도서관">
     <div class="row" style="margin-top:12px"><button class="primary" id="acCreate">학원 만들기</button></div></div>`;
   $('#acCreate').onclick = async () => {
@@ -183,7 +227,7 @@ function renderBooks() {
   if (!catalogReady && S.sets.some((s) => s.source === 'folder')) wr().catalog().then(() => { catalogReady = true; if (S.view === 'books' && !modal.open) render(); }).catch(() => {});
   const sets = [...S.sets].sort((a, b) => (a.order ?? -1) - (b.order ?? -1));
   main.innerHTML = `
-    <div class="row between"><h2>교재 라이브러리</h2><div class="row">${S.sets.some((x) => x.source === 'folder') ? '<button class="ghost danger" data-a="folderReset">폴더 세트 처음부터 다시</button>' : ''}<button class="ghost" data-a="folderSets">폴더로 세트 만들기</button><button class="primary" data-a="newSet">+ 교재 세트</button></div></div>
+    <div class="row between"><h2>교재 라이브러리</h2>${S.role === 'owner' ? `<div class="row">${S.sets.some((x) => x.source === 'folder') ? '<button class="ghost danger" data-a="folderReset">폴더 세트 처음부터 다시</button>' : ''}<button class="ghost" data-a="folderSets">폴더로 세트 만들기</button><button class="primary" data-a="newSet">+ 교재 세트</button></div>` : ''}</div>
     ${S.sets.length ? '' : '<div class="empty">먼저 교재 세트를 만드세요.<br><span class="small">예) 중2-2 중간고사 대비 · PC의 교재 폴더가 있으면 "폴더로 세트 만들기"</span></div>'}
     ${sets.map((s) => (s.source === 'folder' ? folderSetCard(s) : setCard(s))).join('')}
     ${loose.length ? `<div class="card"><h3>세트 없는 교재</h3>${loose.map(bookBlock).join('')}</div>` : ''}`;
@@ -203,7 +247,7 @@ function folderSetCard(s) {
   const ready = all.filter((id) => B(id)?.outline).length;
   return `<div class="card">
     <div class="row between"><div><h3>${esc(s.name)}</h3><span class="muted small">${esc(s.grade || '')} · 교재 ${all.length}권 · 폴더 연결: ${esc(s.root || '')} · 구역 읽음 ${ready}/${all.length}</span></div>
-      <div class="row"><button class="primary small" data-a="setAssign" data-id="${s.id}">학생에게 배정</button><button class="ghost small" data-a="folderSets">폴더 다시 읽기</button><button class="ghost small danger" data-a="setDel" data-id="${s.id}">세트 지우기</button></div></div>
+      <div class="row"><button class="primary small" data-a="setAssign" data-id="${s.id}">학생에게 배정</button>${S.role === 'owner' ? `<button class="ghost small" data-a="folderSets">폴더 다시 읽기</button><button class="ghost small danger" data-a="setDel" data-id="${s.id}">세트 지우기</button>` : ''}</div></div>
     ${(s.groups || []).map((g, gi) => `<div style="border-top:1px dashed var(--line);margin-top:10px;padding-top:8px">
       ${g.name || g.quick ? `<div class="row between"><b class="small">${esc(g.name || '')}</b>${g.quick ? `<button class="ghost small" data-a="setPdf" data-id="${s.id}" data-g="${gi}" data-f="quick">빠른정답모음 PDF</button>` : ''}</div>` : ''}
       ${(g.ids || []).map((id) => { const b = B(id); if (!b) return catalogReady ? `<div class="small muted">교재 정보 없음 (${esc(id)})</div>` : ''; const st = b.outline ? `구역 ${b.outline.sections.length}개 읽음` : b.units ? `단원 ${b.units}` : '처음 오답 입력 때 구역 읽음';
@@ -406,11 +450,14 @@ async function renderSettings() {
       <span class="muted">API 주소</span><span><code>${esc(API_BASE)}</code></span>
       <span class="muted">앱 버전</span><span id="verBox"><b>${APP_VERSION}</b> <span class="muted small">확인 중…</span></span></div>
       <p class="muted small">UID는 서버 허용 목록(ALLOWED_UIDS)에 넣는 값입니다. 선생님을 추가할 때도 그분의 UID를 여기서 확인해 넣습니다.</p></div>
+    <div class="card" id="folderBox"><p class="muted">교재 폴더 확인 중…</p></div>
+    ${S.role === 'owner' ? '<div class="card" id="teachers"><p class="muted">선생님 목록 불러오는 중…</p></div>' : ''}
     <div class="card" id="health"><p class="muted">연결 상태 확인 중…</p></div>
-    <div class="card" id="nightly"><p class="muted">새벽 분석 설정 불러오는 중…</p></div>
+    ${S.role === 'owner' ? '<div class="card" id="nightly"><p class="muted">새벽 분석 설정 불러오는 중…</p></div>' : ''}
     <div class="card"><h3>출력 시험</h3><p class="muted small">재타이핑 시범(내신대비B 1.1 1회차 10문항 + 유사 1 + 정답·해설)으로 A4 출력과 인쇄를 시험합니다.</p>
       <div class="row"><button class="ghost small" data-a="sample" data-aud="student">학생용 미리보기</button><button class="ghost small" data-a="sample" data-aud="teacher">선생님용(출처 표시)</button><select id="smpPer" style="width:auto"><option value="2">한 쪽 2문항</option><option value="4" selected>한 쪽 4문항</option><option value="6">한 쪽 6문항</option></select></div></div>`;
-  renderNightly();
+  if (S.role === 'owner') { renderNightly(); renderTeachers(); }
+  renderFolders();
   checkVersion();
   const out = [];
   try {
@@ -469,6 +516,78 @@ async function renderNightly() {
   };
 }
 
+// ---------- 선생님 관리 (원장) ----------
+const newCode = () => { const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let c = ''; for (let i = 0; i < 8; i++) c += A[Math.floor(Math.random() * A.length)] + (i === 3 ? '-' : ''); return c; };
+async function renderTeachers() {
+  const box = document.getElementById('teachers'); if (!box) return;
+  const ac = (await getDoc(doc(db, 'academies', S.aid))).data() || {};
+  const reqs = (await getDocs(col('joinRequests'))).docs.map((d) => ({ uid: d.id, ...d.data() }));
+  const mem = (await getDocs(col('members'))).docs.map((d) => ({ uid: d.id, ...d.data() }));
+  box.innerHTML = `<h3>선생님</h3><p class="muted small">선생님께 아래 <b>참여 코드</b>와 앱 주소를 알려 주세요. 선생님이 신청하면 여기에 나타나고, <b>승인</b>을 누르면 바로 쓸 수 있습니다(AI 기능 허용 포함).</p>
+    <div class="row"><span class="small">참여 코드</span> ${ac.joinCode ? `<b style="font-size:20px;letter-spacing:.08em">${esc(ac.joinCode)}</b>` : '<span class="muted small">아직 없음</span>'} <button class="ghost small" id="tCode">${ac.joinCode ? '새 코드로 바꾸기' : '참여 코드 만들기'}</button></div>
+    ${reqs.length ? `<h3 style="margin-top:12px">승인 기다리는 신청 ${reqs.length}건</h3>${reqs.map((r) => `<div class="row between" style="border-top:1px solid var(--line);padding:6px 0"><span><b>${esc(r.name)}</b> <span class="muted small">${esc(r.email || '')} · ${new Date(r.at).toLocaleString('ko-KR')}</span></span>
+      <span class="row"><button class="primary small" data-tok="${r.uid}">승인</button><button class="ghost small danger" data-tno="${r.uid}">거절</button></span></div>`).join('')}` : ''}
+    <h3 style="margin-top:12px">구성원 ${mem.length}명</h3>${mem.map((m) => `<div class="row between" style="border-top:1px solid var(--line);padding:6px 0"><span><b>${esc(m.name || '')}</b> <span class="badge ${m.role === 'owner' ? 'gold' : ''}">${m.role === 'owner' ? '원장' : '선생님'}</span> <span class="muted small">${esc(m.email || '')}</span></span>
+      ${m.role === 'owner' ? '' : `<button class="ghost small danger" data-tout="${m.uid}">빼기</button>`}</div>`).join('')}`;
+  document.getElementById('tCode').onclick = async () => {
+    if (ac.joinCode && !confirm('새 코드로 바꾸면 예전 코드로는 신청할 수 없습니다. 바꿀까요?')) return;
+    const code = newCode();
+    if (ac.joinCode) await deleteDoc(doc(db, 'joinCodes', ac.joinCode)).catch(() => {});
+    await setDoc(doc(db, 'joinCodes', code), { aid: S.aid, academyName: S.academy?.name || '', by: S.user.uid, at: Date.now() });
+    await updateDoc(doc(db, 'academies', S.aid), { joinCode: code });
+    renderTeachers();
+  };
+  box.querySelectorAll('[data-tok]').forEach((b) => b.onclick = async () => {
+    const r = reqs.find((x) => x.uid === b.dataset.tok); b.disabled = true;
+    try {
+      await ai('/admin/allow', { uid: r.uid, name: r.name, allow: true });
+      await setDoc(ref('members', r.uid), { role: 'teacher', name: r.name, email: r.email || '', joinedAt: serverTimestamp() });
+      await deleteDoc(ref('joinRequests', r.uid));
+      toast(`${r.name} 선생님을 승인했습니다`);
+    } catch (e) { toast('승인하지 못했습니다: ' + e.message); }
+    renderTeachers();
+  });
+  box.querySelectorAll('[data-tno]').forEach((b) => b.onclick = async () => { if (!confirm('이 신청을 거절할까요?')) return; await deleteDoc(ref('joinRequests', b.dataset.tno)); renderTeachers(); });
+  box.querySelectorAll('[data-tout]').forEach((b) => b.onclick = async () => {
+    const m = mem.find((x) => x.uid === b.dataset.tout);
+    if (!confirm(`${m.name} 선생님을 학원에서 뺄까요? 그 선생님이 등록한 학생 기록은 남고, 원장님 화면에서 계속 볼 수 있습니다.`)) return;
+    await ai('/admin/allow', { uid: m.uid, allow: false }).catch(() => {});
+    await deleteDoc(ref('members', m.uid)); renderTeachers();
+  });
+}
+
+// ---------- 교재 폴더 (세트 교재 PDF가 있는 폴더를 이 PC에 연결) ----------
+async function neededFolders() {
+  const need = [...new Map(S.sets.filter((s) => s.source === 'folder' && s.root).map((s) => [s.root, s])).values()];
+  const roots = FOLD.supported() ? await FOLD.listRoots().catch(() => []) : [];
+  const out = [];
+  for (const s of need) {
+    const r = roots.find((x) => x.label === s.root);
+    out.push({ label: s.root, path: s.rootPath || '', state: !r ? 'missing' : (await FOLD.permission(r)) === 'granted' ? 'ok' : 'prompt', rec: r });
+  }
+  return out;
+}
+async function connectFolder(label, path) {
+  try {
+    const rec = await FOLD.addRoot({ label, path, category: '내신대비', mode: 'sets' });
+    if (rec.handle.name !== label) { await FOLD.removeRoot(rec.id); toast(`"${label}" 폴더를 골라 주세요. (고른 폴더: ${rec.handle.name})`); return false; }
+    toast(`"${label}" 폴더를 연결했습니다`); return true;
+  } catch (e) { if (e.name !== 'AbortError') toast(e.message); return false; }
+}
+async function renderFolders() {
+  const box = document.getElementById('folderBox'); if (!box) return;
+  if (!FOLD.supported()) { box.innerHTML = '<h3>교재 폴더</h3><p class="muted small">교재 폴더 연결은 PC의 크롬·엣지에서만 됩니다.</p>'; return; }
+  const list = await neededFolders();
+  box.innerHTML = `<h3>교재 폴더</h3><p class="muted small">오답노트 문항은 이 PC에 연결한 교재 폴더의 PDF에서 잘라 옵니다. MYBOX(N: 드라이브)의 같은 이름 폴더를 연결하세요.</p>
+    ${list.map((f) => `<div class="row between" style="border-top:1px solid var(--line);padding:6px 0"><span><b>${esc(f.label)}</b> ${f.rec ? `<span class="muted small">${esc(f.rec.path)}</span>` : ''}</span>
+      <span class="row"><span class="badge ${f.state === 'ok' ? '' : 'red'}">${f.state === 'ok' ? '연결됨' : f.state === 'prompt' ? '허락 필요' : '연결 안 됨'}</span>${f.state === 'ok' ? '' : `<button class="primary small" data-fconn="${esc(f.label)}">${f.state === 'prompt' ? '다시 연결' : '연결'}</button>`}</span></div>`).join('') || '<p class="muted small">폴더로 만든 교재 세트가 아직 없습니다.</p>'}`;
+  box.querySelectorAll('[data-fconn]').forEach((b) => b.onclick = async () => {
+    const f = list.find((x) => x.label === b.dataset.fconn);
+    if (f.state === 'prompt') await FOLD.reconnectAll([f.rec]); else await connectFolder(f.label, f.path);
+    renderFolders(); permBanner();
+  });
+}
+
 async function checkVersion() {
   const box = document.getElementById('verBox'); if (!box) return;
   try {
@@ -490,8 +609,16 @@ async function permBanner() {
   if (!FOLD.supported()) return;
   const roots = await FOLD.listRoots().catch(() => []);
   let need = 0; for (const r of roots) if ((await FOLD.permission(r)) !== 'granted') need++;
-  const last = (await getDocs(col('aiUsage'))).docs.filter((d) => d.id.startsWith('run_')).map((d) => ({ day: d.id.slice(4), ...d.data() })).sort((a, b) => b.day.localeCompare(a.day))[0];
+  const last = S.role === 'owner' ? (await getDocs(col('aiUsage'))).docs.filter((d) => d.id.startsWith('run_')).map((d) => ({ day: d.id.slice(4), ...d.data() })).sort((a, b) => b.day.localeCompare(a.day))[0] : null;
   const lastBad = last && last.day === localDay() && /허락/.test(last.stop || '');
+  const missing = (await neededFolders()).filter((f) => f.state === 'missing');
+  if (missing.length) {
+    const div = document.createElement('div'); div.id = 'permBanner'; div.className = 'card'; div.style.cssText = 'background:var(--gold-bg);max-width:860px;margin:12px auto 0';
+    div.innerHTML = `<div class="row between"><span class="small"><b>교재 폴더를 이 PC에 연결하세요.</b> MYBOX(N: 드라이브)에서 <b>${missing.map((f) => esc(f.label)).join(', ')}</b> 폴더를 고른 뒤 [파일 보기]를 누르세요.</span><button class="primary small" id="permGo">교재 폴더 연결</button></div>`;
+    main.before(div);
+    document.getElementById('permGo').onclick = async () => { for (const f of missing) await connectFolder(f.label, f.path); permBanner(); };
+    return;
+  }
   if (!need && !lastBad) return;
   const div = document.createElement('div'); div.id = 'permBanner'; div.className = 'card'; div.style.cssText = 'background:var(--gold-bg);max-width:860px;margin:12px auto 0';
   div.innerHTML = `<div class="row between"><span class="small"><b>교재 폴더 허락이 필요합니다.</b> ${lastBad ? '오늘 새벽 분석이 이 때문에 쉬었습니다. ' : ''}누른 뒤 크롬이 물으면 <b>"방문할 때마다 허용"</b>을 고르세요. 그래야 새벽에 다시 묻지 않습니다.</span><button class="primary small" id="permGo">폴더 다시 연결</button></div>`;
