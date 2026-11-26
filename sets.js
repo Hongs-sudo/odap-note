@@ -54,24 +54,22 @@ export function planSets(files, rootLabel, opts = {}) {
     const g = gradeNo(parts[0]); if (!g) { skipped.push({ rel: f.rel, why: '학년 폴더 밖' }); continue; }
     // "교재 완성본" 폴더는 바로 위 폴더와 같은 묶음
     const dirs = parts.slice(1).filter((p) => !/완성본/.test(p));
-    pdfs.push({ ...f, rel: f.rel.normalize('NFC'), name, stem: name.replace(/\.pdf$/i, ''), grade: g, sub: dirs[0] || '', done: parts.some((p) => /완성본/.test(p)) || /완성본/.test(name), role: roleOf(name), code: codeOf(name), mock: /모의고사/.test(name) });
+    pdfs.push({ ...f, rel: f.rel.normalize('NFC'), name, stem: name.replace(/\.pdf$/i, ''), grade: g, sub: dirs[0] || '', done: parts.some((p) => /완성본/.test(p)) || /완성본/.test(name), role: roleOf(name), code: codeOf(name), mock: /모의고사/.test(name), week: /주말\s*모의고사/.test(name) });
   }
-  // 묶음 이름
+  // 세트 나누기: 학년 아래 폴더가 중간대비·기말대비로 나뉘면 폴더마다 다른 세트,
+  // 모의고사는 따로, 주말모의고사는 다른 모의고사와도 따로
   const subsOf = (g) => [...new Set(pdfs.filter((p) => p.grade === g && p.sub).map((p) => p.sub))].sort();
-  const groupName = (g, sub) => {
-    if (!sub) return '';
-    const subs = subsOf(g);
-    if (subs.every((s) => termOf(s))) return `${CIRCLE[subs.indexOf(sub)] || ''} 2학기 ${termOf(sub)}대비`.trim();
-    return sub.replace(/^[A-Z]\./, '');
-  };
+  const termSplit = (g) => { const subs = subsOf(g); return subs.length > 1 && subs.every((x) => termOf(x)); };
+  const groupName = (g, sub) => (!sub || termSplit(g) ? '' : sub.replace(/^[A-Z]\./, ''));
   const sets = new Map();
-  const setOf = (g, mock) => {
-    const key = (mock ? 'mock|' : 'main|') + g;
+  const setOf = (p) => {
+    const g = p.grade; const kind = p.week ? 'week' : p.mock ? 'mock' : 'main';
+    const term = termSplit(g) ? termOf(p.sub) : '';
+    const key = `${kind}|${g}${term ? '|' + term : ''}`;
     if (!sets.has(key)) {
-      const ps = pdfs.filter((p) => p.grade === g && !p.mock);
-      const terms = [...new Set(ps.map((p) => termOf(p.sub) || termOf(p.name)).filter(Boolean))];
-      const name = opts.names?.[key] || (mock ? `중${g} 모의고사` : `중${g}-2 ${terms.length === 1 ? terms[0] + '대비' : terms.length > 1 && subsOf(g).length > 1 ? '내신대비' : '내신대비 (중간·기말 통합)'}`);
-      sets.set(key, { key, name, grade: `중${g}`, mock, order: (mock ? 10 : 0) + Number(g), groups: new Map() });
+      const t = term || (kind === 'week' ? termOf(p.name) : '');
+      const dflt = kind === 'main' ? `중${g}-2 ${t ? `2학기 ${t}대비` : '내신대비'}` : kind === 'mock' ? `중${g} 모의고사${t ? ` (2학기 ${t}대비)` : ''}` : `중${g} ${t ? t + '대비 ' : ''}주말모의고사`;
+      sets.set(key, { key, name: opts.names?.[key] || dflt, grade: `중${g}`, mock: kind !== 'main', order: (kind === 'main' ? 0 : 100) + Number(g) * 3 + (term === '기말' || kind === 'week' ? 1 : 0), groups: new Map() });
     }
     return sets.get(key);
   };
@@ -81,7 +79,7 @@ export function planSets(files, rootLabel, opts = {}) {
     return set.groups.get(name);
   };
   for (const p of pdfs) {
-    const set = setOf(p.grade, p.mock); const grp = grpOf(set, p.grade, p.sub);
+    const set = setOf(p); const grp = grpOf(set, p.grade, p.sub);
     if (p.role === 'quick') { grp.quick = { rel: p.rel, size: p.size, name: p.name }; continue; }
     if (!p.code) { skipped.push({ rel: p.rel, why: '교재 기호를 알 수 없음' }); continue; }
     if (!grp.books.has(p.code)) grp.books.set(p.code, { code: p.code, problems: [], answers: [] });
@@ -120,7 +118,7 @@ export function planSets(files, rootLabel, opts = {}) {
     }
     if (groups.length) out.push({ key: set.key, name: set.name, grade: set.grade, mock: set.mock, order: set.order, groups });
   }
-  return { sets: out, skipped, notes };
+  return { sets: out, skipped, notes, keys: out.map((x) => x.key) };
 }
 
 // ---------------- 화면: 폴더 연결 → 읽기 → 미리보기 → 만들기 ----------------
@@ -128,7 +126,10 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const hash = (s) => { let h = 2166136261; for (const ch of String(s)) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
 export const SET_ROOT = { label: '내 PC·2학기 내신대비교재', path: 'C:\\Users\\user\\Desktop\\수학도서관\\중등내신대비\\2학기 내신대비교재', category: '내신대비', mode: 'sets' };
 // 원장님이 정한 세트 이름 (이 폴더를 처음 읽을 때 기본값)
-const FIRST_NAMES = { 'main|1': '중1-2 내신대비', 'main|2': '중2-2 내신대비 (중간·기말 통합)', 'main|3': '중3-2 기말대비' };
+const FIRST_NAMES = {
+  'main|1|중간': '중1-2 2학기 중간대비', 'main|1|기말': '중1-2 2학기 기말대비', 'main|2': '중2-2 내신대비 (중간·기말 통합)', 'main|3': '중3-2 기말대비',
+  'mock|1|중간': '중1 모의고사 (2학기 중간대비)', 'week|1|기말': '중1 모의고사 (2학기 기말대비)', 'mock|2': '중2 모의고사 A·B·C', 'week|2': '중2 기말대비 주말모의고사', 'mock|3': '중3 모의고사',
+};
 const ansLabel = (b) => (b.sameFile ? '정답·해설: 같은 PDF 뒤쪽' : b.files.length > 2 ? `해설 ${b.files.length - 1}개 함께` : '문제+해설');
 
 export function createSetBuilder(ctx) {
@@ -180,12 +181,12 @@ export function createSetBuilder(ctx) {
     btn.onclick = async () => {
       plan.sets.forEach((s, i) => { s.name = document.querySelector(`[data-sn="${i}"]`).value.trim() || s.name; s.on = document.querySelector(`[data-sc="${i}"]`).checked; });
       btn.disabled = true; btn.textContent = '만드는 중…';
-      try { const r = await create(root, plan.sets.filter((s) => s.on)); ctx.closeModal(); ctx.toast(`세트 ${r.sets}개 · 교재 ${r.books}권을 만들었습니다${r.replaced ? ` (N: 드라이브의 같은 교재 ${r.replaced}종은 목록에서 숨김)` : ''}`); }
+      try { const r = await create(root, plan.sets.filter((s) => s.on), plan.keys); ctx.closeModal(); ctx.toast(`세트 ${r.sets}개 · 교재 ${r.books}권을 만들었습니다${r.dropped ? ` · 예전 구성 세트 ${r.dropped}개 정리` : ''}${r.replaced ? ` (N: 드라이브의 같은 교재 ${r.replaced}종은 목록에서 숨김)` : ''}`); }
       catch (e) { btn.disabled = false; count(); ctx.toast('오류: ' + e.message); }
     };
   }
 
-  async function create(root, sets) {
+  async function create(root, sets, keys = []) {
     const all = (await fs.getDocs(col('catalogBooks'))).docs.map((d) => ({ id: d.id, ...d.data() }));
     const byId = Object.fromEntries(all.map((x) => [x.id, x]));
     let batch = fs.writeBatch(db), n = 0, nb = 0, replaced = 0;
@@ -206,7 +207,7 @@ export function createSetBuilder(ctx) {
           batch.set(ref('catalogBooks', id), {
             key: 'set|' + root.label + '|' + b.files[0].rel, title: b.title, fullTitle: b.fullTitle, sub: b.sub, code: b.code, count: b.count,
             kind: '내신대비', grade: s.grade + '-2', roles, audience: [], base: '', zipped: false, review: 0, files: b.files,
-            source: 'folder-set', setId: sid, setName: s.name, group: g.name, sameFile: b.sameFile, mock: b.mock, multiAnswer: true, seenAt: now,
+            source: 'folder-set', setId: sid, setName: s.name, group: g.name, sameFile: b.sameFile, mock: b.mock, multiAnswer: true, seenAt: now, retired: fs.deleteField(),
             ...(old && !same ? { outline: fs.deleteField() } : {}), // 파일이 바뀌었으면 구역을 다시 읽음
           }, { merge: true });
           await step(); ids.push(id); nb++;
@@ -221,6 +222,11 @@ export function createSetBuilder(ctx) {
         ...(ex ? {} : { createdAt: fs.serverTimestamp(), createdBy: ctx.uid() }) }, { merge: true });
       await step();
     }
+    // 폴더 구성이 바뀌어 이제 없는 세트(예: 예전 "중1-2 내신대비")는 지움 — 교재와 학생 기록은 그대로
+    let dropped = 0;
+    if (keys.length) for (const d of (await fs.getDocs(col('bookSets'))).docs) {
+      const x = d.data(); if (x.source === 'folder' && x.root === root.label && !keys.includes(x.key)) { batch.delete(d.ref); dropped++; await step(); }
+    }
     // N: 드라이브에 같은 파일(이름 같음)이 있는 교재는 교재 찾기 목록에서 숨김 (이미 고른 학생 기록은 그대로)
     for (const x of all) {
       if (x.source === 'folder-set' || x.replacedBy) continue;
@@ -231,7 +237,7 @@ export function createSetBuilder(ctx) {
     batch.set(ref('settings', 'folderSets'), { names: { ...(saved.names || {}), [root.label]: { ...(saved.names?.[root.label] || {}), ...names } }, at: now }, { merge: true });
     await batch.commit();
     await ctx.reloadCatalog();
-    return { sets: sets.length, books: nb, replaced };
+    return { sets: sets.length, books: nb, replaced, dropped };
   }
 
   // 세트 교재 PDF 열기 (폴더에서 바로)
@@ -265,5 +271,42 @@ export function createSetBuilder(ctx) {
     await fs.deleteDoc(ref('bookSets', set.id)); ctx.toast('세트를 지웠습니다');
   }
 
-  return { start, preview, create, openPdfFile, assign, removeSet };
+  // 폴더로 만든 세트를 처음부터 다시: 세트·세트로 배정한 교재(오답 기록 없는 것)·단원 분석 대기·N: 숨김 표시를 정리
+  async function reset() {
+    ctx.openModal('<p class="pad center">정리할 내용을 확인하는 중…</p>');
+    const sets = (await fs.getDocs(col('bookSets'))).docs.filter((d) => d.data().source === 'folder');
+    const cat = (await fs.getDocs(col('catalogBooks'))).docs.map((d) => ({ id: d.id, ref: d.ref, ...d.data() }));
+    const mine = new Set(cat.filter((x) => x.source === 'folder-set').map((x) => x.id));
+    const title = (id) => cat.find((x) => x.id === id)?.title || id;
+    const plan = ctx.students().map((st) => {
+      const ids = (st.catalogIds || []).filter((id) => mine.has(id));
+      const used = new Set((st.records || []).map((r) => r.bookId));
+      return { st, drop: ids.filter((id) => !used.has(id)), keep: ids.filter((id) => used.has(id)) };
+    }).filter((x) => x.drop.length || x.keep.length);
+    const hidden = cat.filter((x) => x.replacedBy);
+    const q = (await fs.getDocs(fs.query(col('analysisQueue'), fs.where('status', '==', 'queued')))).docs.filter((d) => mine.has(d.data().bookId));
+    const nDrop = plan.reduce((a, x) => a + x.drop.length, 0), keeps = plan.filter((x) => x.keep.length);
+    ctx.openModal(`<h2>폴더 세트 처음부터 다시</h2><p class="muted small">아래 내용만 지웁니다. PC 폴더의 PDF, 직접 만든 세트, N: 드라이브 교재, 오답 기록·오답노트는 그대로입니다.</p>
+      <div class="kv small" style="margin:8px 0"><span class="muted">교재 세트</span><span>${sets.length}개 — ${sets.map((d) => esc(d.data().name)).join(', ') || '없음'}</span>
+        <span class="muted">학생 배정</span><span>${plan.filter((x) => x.drop.length).length}명 · ${nDrop}권 빼기</span>
+        <span class="muted">새벽 단원 분석 대기</span><span>${q.length}권 취소</span>
+        <span class="muted">교재 목록 숨김 표시</span><span>${hidden.length}종 다시 보이게</span></div>
+      ${keeps.length ? `<div class="card small" style="background:var(--gold-bg)"><b>오답을 이미 입력한 교재는 빼지 않습니다.</b><br>${keeps.map((x) => `${esc(x.st.name)}: ${x.keep.map((id) => esc(title(id))).join(', ')}`).join('<br>')}</div>` : ''}
+      <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="ghost" data-a="close">취소</button><button class="primary" id="srGo" style="background:var(--red);border-color:var(--red);color:#fff">지우기</button></div>`);
+    document.getElementById('srGo').onclick = async (e) => {
+      e.currentTarget.disabled = true; e.currentTarget.textContent = '지우는 중…';
+      try {
+        let batch = fs.writeBatch(db), n = 0; const step = async () => { if (++n % 400 === 0) { await batch.commit(); batch = fs.writeBatch(db); } };
+        for (const d of sets) { batch.delete(d.ref); await step(); }
+        for (const x of plan) if (x.drop.length) { batch.update(ref('students', x.st.id), { catalogIds: (x.st.catalogIds || []).filter((id) => !x.drop.includes(id)) }); await step(); }
+        for (const d of q) { batch.update(d.ref, { status: 'skipped' }); await step(); }
+        for (const x of hidden) { batch.update(x.ref, { replacedBy: fs.deleteField() }); await step(); }
+        for (const id of mine) { batch.update(ref('catalogBooks', id), { retired: true }); await step(); } // 다시 만들 때까지 교재 찾기 목록에서 숨김 (읽어 둔 구역은 보관)
+        await batch.commit(); await ctx.reloadCatalog();
+        ctx.closeModal(); ctx.toast(`정리했습니다 — 세트 ${sets.length}개, 학생 배정 ${nDrop}권. 이제 "폴더로 세트 만들기"를 누르세요`);
+      } catch (er) { ctx.toast('오류: ' + er.message); ctx.closeModal(); }
+    };
+  }
+
+  return { start, preview, create, reset, openPdfFile, assign, removeSet };
 }

@@ -17,7 +17,7 @@ import * as FOLD from './folders.js';
 import { createSetBuilder } from './sets.js';
 
 // 앱 버전: 고칠 때마다 올림. 연결 설정에서 지금 쓰는 버전과 서버의 최신 버전을 비교해 보여 줌
-const APP_VERSION = '2026.11.26-1';
+const APP_VERSION = '2026.11.26-2';
 // ---------- 공통 ----------
 const $ = (s) => document.querySelector(s);
 const main = $('#main');
@@ -166,7 +166,7 @@ function sb() {
   SB ||= createSetBuilder({
     db, aid: () => S.aid, uid: () => S.user.uid, toast, openModal, closeModal, students: () => S.students,
     reloadCatalog: async () => { await wr().catalog(true); catalogReady = true; },
-    fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, updateDoc, deleteDoc, deleteField, serverTimestamp },
+    fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, updateDoc, deleteDoc, deleteField, serverTimestamp, query, where },
   });
   return SB;
 }
@@ -183,7 +183,7 @@ function renderBooks() {
   if (!catalogReady && S.sets.some((s) => s.source === 'folder')) wr().catalog().then(() => { catalogReady = true; if (S.view === 'books' && !modal.open) render(); }).catch(() => {});
   const sets = [...S.sets].sort((a, b) => (a.order ?? -1) - (b.order ?? -1));
   main.innerHTML = `
-    <div class="row between"><h2>교재 라이브러리</h2><div class="row"><button class="ghost" data-a="folderSets">폴더로 세트 만들기</button><button class="primary" data-a="newSet">+ 교재 세트</button></div></div>
+    <div class="row between"><h2>교재 라이브러리</h2><div class="row">${S.sets.some((x) => x.source === 'folder') ? '<button class="ghost danger" data-a="folderReset">폴더 세트 처음부터 다시</button>' : ''}<button class="ghost" data-a="folderSets">폴더로 세트 만들기</button><button class="primary" data-a="newSet">+ 교재 세트</button></div></div>
     ${S.sets.length ? '' : '<div class="empty">먼저 교재 세트를 만드세요.<br><span class="small">예) 중2-2 중간고사 대비 · PC의 교재 폴더가 있으면 "폴더로 세트 만들기"</span></div>'}
     ${sets.map((s) => (s.source === 'folder' ? folderSetCard(s) : setCard(s))).join('')}
     ${loose.length ? `<div class="card"><h3>세트 없는 교재</h3>${loose.map(bookBlock).join('')}</div>` : ''}`;
@@ -534,6 +534,7 @@ document.addEventListener('click', (e) => {
     recheck: renderSettings,
     sample: () => printSample(b.dataset.aud).catch((er) => toast(er.message)),
     folderSets: () => sb().start().catch((er) => toast(er.message)),
+    folderReset: () => sb().reset().catch((er) => toast(er.message)),
     setAssign: () => sb().assign(S.sets.find((x) => x.id === id), wr().bookOf),
     setDel: () => sb().removeSet(S.sets.find((x) => x.id === id)),
     setPdf: () => { const fi = b.dataset.f; if (fi === 'quick') { const g = S.sets.find((x) => x.id === id)?.groups?.[Number(b.dataset.g)]; if (g?.quick) sb().openPdfFile(g.quick); return; } const bk = wr().bookOf(key); const f = bk?.files?.[Number(fi)]; if (f) sb().openPdfFile(f); },
