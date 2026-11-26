@@ -3,7 +3,7 @@
 // - 문항 위치·정답은 PDF 글자층에서 읽고(무료), 문항 재타이핑만 AI를 씁니다. 한 번 타이핑한 쪽은 문항 은행에 저장돼 다시 쓰지 않습니다.
 import * as F from './folders.js';
 import { openPdf, localDay } from './analysis.js';
-import { readOutline, readAnswerBook, normNo } from './outline.js';
+import { readOutline, readAnswerBook, normNo, alignKeys, answerStart } from './outline.js';
 import { cropProblem, cropRegions, toJpegBase64, pageJpegBase64 } from './crop.js';
 import { printDoc } from './print/print.js';
 
@@ -32,7 +32,8 @@ export function createWrong(ctx) {
   const ref = (n, id) => fs.doc(db, 'academies', ctx.aid(), n, id);
   const C = { list: null, pdf: {} }; // 교재 목록, 열어 둔 PDF
 
-  async function catalog() {
+  async function catalog(force) {
+    if (force) { C.list = null; C.pdf = {}; }
     if (!C.list) {
       const snap = await fs.getDocs(col('catalogBooks'));
       C.list = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((b) => b.title && (b.files || []).some((f) => f.ext === 'pdf'));
@@ -40,10 +41,17 @@ export function createWrong(ctx) {
     return C.list;
   }
   const bookOf = (id) => C.list?.find((b) => b.id === id);
+  // 정답·해설 PDF 목록: 폴더 세트 교재는 해설 여러 개(합본) 또는 문제 PDF 뒤쪽(sameFile)
+  const answerFiles = (b) => {
+    const pdfs = (b.files || []).filter((f) => f.ext === 'pdf');
+    if (b.sameFile) return [fileOf(b, 'q')].filter(Boolean);
+    if (b.multiAnswer) return pdfs.filter((f) => f.role === '정답·해설');
+    return [pdfs.find((f) => f.role === '빠른정답') || pdfs.find((f) => f.role === '정답·해설')].filter(Boolean);
+  };
   const fileOf = (b, kind) => {
     const pdfs = (b.files || []).filter((f) => f.ext === 'pdf');
     if (kind === 'q') return pdfs.find((f) => f.role === '본책' && f.audience !== '교사용') || pdfs.find((f) => f.role === '본책');
-    return pdfs.find((f) => f.role === '빠른정답') || pdfs.find((f) => f.role === '정답·해설');
+    return answerFiles(b)[Number(kind.slice(1)) || 0]; // 'a', 'a1', 'a2' …
   };
 
   // ---------- 폴더 허락 (버튼을 누른 직후에만 물을 수 있음) ----------
@@ -56,12 +64,12 @@ export function createWrong(ctx) {
   }
   async function openBookPdf(b, kind, roots) {
     const f = fileOf(b, kind); if (!f) return null;
-    const k = b.id + kind;
+    const k = f.label + '|' + f.rel; // 같은 PDF는 한 번만 엶 (정답이 문제 뒤에 붙은 교재)
     if (!C.pdf[k]) {
       roots ||= await F.listRoots();
       const r = roots.find((x) => x.label === f.label);
       if (!r) throw new Error(`"${f.label}" 폴더가 이 PC에 연결되어 있지 않습니다. 교재 정리 탭에서 연결하세요.`);
-      if ((await F.permission(r)) !== 'granted') throw new Error('MYBOX 폴더 허락이 필요합니다. 교재 정리 탭에서 "MYBOX 다시 연결"을 누르세요.');
+      if ((await F.permission(r)) !== 'granted') throw new Error(`"${f.label}" 폴더 허락이 필요합니다. 맨 위 노란 띠의 "폴더 다시 연결"을 누르세요.`);
       C.pdf[k] = openPdf(await F.openFile(r, f.rel));
     }
     return C.pdf[k];
@@ -72,10 +80,22 @@ export function createWrong(ctx) {
     if (b.outline?.v === 2) return b.outline;
     const pdf = await openBookPdf(b, 'q', roots);
     if (!pdf) throw new Error('이 교재의 문제 PDF를 찾지 못했습니다.');
-    const o = await readOutline(pdf, onProgress);
+    const mock = !!b.mock;
+    const split = b.sameFile ? await answerStart(pdf) : 0; // 정답과 해설이 시작하는 쪽
+    const o = await readOutline(pdf, onProgress, { to: split ? split - 1 : 0, mock });
+    const keys = o.sections.map((s) => s.key);
     let ans = {}, sol = {};
-    try { const ap = await openBookPdf(b, 'a', roots); if (ap) ({ ans, sol } = await readAnswerBook(ap, o.sections.map((s) => s.key))); } catch { /* 해설 없음 */ }
-    const outline = { v: 2, sections: o.sections, where: o.where, textPages: o.textPages, pages: o.pages, ans, sol, at: Date.now() };
+    const n = b.sameFile ? (split ? 1 : 0) : answerFiles(b).length;
+    for (let i = 0; i < n; i++) {
+      try {
+        const ap = await openBookPdf(b, i ? 'a' + i : 'a', roots); if (!ap) continue;
+        const r = await readAnswerBook(ap, keys, { from: split || 1, mock });
+        const a2 = alignKeys(r.ans, keys), s2 = alignKeys(r.sol, keys);
+        for (const k in a2) if (!(k in ans)) ans[k] = a2[k];
+        for (const k in s2) if (!(k in sol)) sol[k] = i ? s2[k].map((g) => ({ ...g, f: i })) : s2[k]; // f: 몇 번째 해설 PDF인지
+      } catch { /* 해설 없음 */ }
+    }
+    const outline = { v: 2, sections: o.sections, where: o.where, textPages: o.textPages, pages: o.pages, ans, sol, split, at: Date.now() };
     await fs.setDoc(ref('catalogBooks', b.id), { outline }, { merge: true });
     b.outline = outline;
     return outline;
@@ -98,6 +118,8 @@ export function createWrong(ctx) {
       else { const sel = document.getElementById('wBook'); sel?.querySelector(`option[value="${id}"]`)?.remove(); }
       return true;
     };
+    const folderSets = (ctx.sets?.() || []).filter((x) => x.source === 'folder');
+    const setOpts = folderSets.map((x) => `<option value="${x.id}">${esc(x.name)} · ${(x.groups || []).reduce((a, g) => a + (g.ids || []).length, 0)}권</option>`).join('');
     const draw = async () => {
       const b = bookOf(st.bid);
       ctx.openModal(`<div class="wide"><h2>${esc(student.name)} · 오답 입력</h2>
@@ -109,6 +131,7 @@ export function createWrong(ctx) {
           <div class="row" style="margin-top:6px"><select id="fG" style="width:auto">${GRADES.map((g) => `<option ${st.fg === g ? 'selected' : ''}>${g}</option>`).join('')}</select>
             <select id="fK" style="width:auto">${KINDS.map((k) => `<option ${st.fk === k ? 'selected' : ''}>${k}</option>`).join('')}</select>
             <input type="text" id="wFind" placeholder="이름 일부 (띄어쓰기 무시)" value="${esc(st.q)}" style="flex:1"></div>
+          ${setOpts ? `<div class="row" style="margin-top:6px"><span class="small">교재 세트 통째로:</span><select id="wSet" style="flex:1">${setOpts}</select><button class="ghost small" id="wSetAdd" type="button">이 학생 교재로 추가</button></div>` : ''}
           <div id="wFound"></div></details>
         <div id="wGrid" style="margin-top:10px">${b ? '<p class="muted small">교재 구역을 읽는 중… (처음 한 번만, 몇 초 걸립니다)</p>' : '<p class="muted small">교재를 고르세요.</p>'}</div>
         <div class="row between" style="margin-top:14px"><span class="muted small" id="wSum"></span><div class="row"><button class="ghost" data-a="close">취소</button><button class="primary" id="wSave">저장</button></div></div></div>`);
@@ -124,7 +147,7 @@ export function createWrong(ctx) {
       const find = () => {
         st.q = document.getElementById('wFind').value.trim(); st.fg = document.getElementById('fG').value; st.fk = document.getElementById('fK').value;
         const q = st.q.replace(/[\s_]+/g, '');
-        const hits = list.filter((x) => (st.fg === '전체 학년' || (x.grade || '').startsWith(st.fg)) && (st.fk === '전체 분류' || x.kind === st.fk || (st.fk === '내신대비' && /내신/.test(x.title)))
+        const hits = list.filter((x) => !x.replacedBy && (st.fg === '전체 학년' || (x.grade || '').startsWith(st.fg)) && (st.fk === '전체 분류' || x.kind === st.fk || (st.fk === '내신대비' && /내신/.test(x.title)))
           && (!q || x.title.replace(/[\s_]+/g, '').includes(q))).sort((a, b) => a.title.localeCompare(b.title, 'ko'));
         const add = hits.filter((x) => !(student.catalogIds || []).includes(x.id));
         document.getElementById('wFound').innerHTML = `<div class="row between" style="margin:6px 0"><span class="muted small">${hits.length}종${hits.length > 300 ? ' (앞 300종만 표시)' : ''}</span>${add.length ? `<button class="ghost small" id="wAddAll">보이는 교재 ${add.length}종 모두 이 학생 교재로 추가</button>` : ''}</div>
@@ -136,7 +159,15 @@ export function createWrong(ctx) {
           if ((student.catalogIds || []).includes(id)) { if (await dropBook(id)) find(); return; } // ✓ 교재를 다시 누르면 빼기
           await addIds([id]); st.bid = id; st.picked = {}; st.solved = new Set(); draw();
         });
-        const all = document.getElementById('wAddAll');
+        const sb = document.getElementById('wSetAdd');
+      if (sb) sb.onclick = async () => {
+        const set = folderSets.find((x) => x.id === document.getElementById('wSet').value); if (!set) return;
+        const ids = (set.groups || []).flatMap((g) => g.ids || []).filter((id) => bookOf(id) && !(student.catalogIds || []).includes(id));
+        const all2 = [...new Set([...(student.catalogIds || []), ...ids])]; await saveStudent(student.id, { catalogIds: all2 }); student.catalogIds = all2;
+        ids.forEach((id) => { const x = bookOf(id); if (x && !mine.includes(x)) mine.push(x); });
+        ctx.toast(`${set.name} ${ids.length}권을 추가했습니다`); if (!st.bid) st.bid = ids[0] || ''; draw();
+      };
+      const all = document.getElementById('wAddAll');
         if (all) all.onclick = async () => { await addIds(add.map((x) => x.id)); ctx.toast(`${add.length}종을 추가했습니다. 위 목록에서 교재를 고르세요.`); if (!st.bid) st.bid = add[0]?.id || ''; draw(); };
       };
       ['fG', 'fK'].forEach((id) => document.getElementById(id).onchange = find);
@@ -410,7 +441,8 @@ export function createWrong(ctx) {
     }
     const segs = o.sol?.[key];
     if (!d.sol && segs?.length) {
-      const ap = await openBookPdf(b, 'a', roots);
+      const fi = segs[0].f || 0;
+      const ap = await openBookPdf(b, fi ? 'a' + fi : 'a', roots);
       if (ap) { const c = await cropRegions(ap, segs); if (c) up.sol = c; }
     }
     if (!d.answer && o.ans?.[key]) up.answer = o.ans[key];

@@ -42,12 +42,17 @@ function joinItems(arr) {
   return s.replace(/\s+/g, ' ').trim();
 }
 
+// 모의고사처럼 회마다 번호가 1부터 다시 시작하는 교재: 위쪽의 "1회·평면도형" 줄을 구역 제목으로 씀
+const MOCK = /^(\d{1,2})\s*회\s*·\s*(\S.*)$/;
+const mockKey = (n, keys) => [...keys].find((k) => k.startsWith(n + '회')) || null;
+
 // 문제 PDF 한 쪽 → { head, nos }
-export function readProblemPage({ W, H, items }) {
+export function readProblemPage({ W, H, items }, opts = {}) {
   const all = lines(items, W, false);
   const top = all.filter((l) => l.y < H * 0.12);
   const headLine = all.find((l) => HEAD.test(l.text));
-  const head = headLine ? headLine.text.match(HEAD)[0] : (top[0]?.text || '');
+  let head = headLine ? headLine.text.match(HEAD)[0] : (top[0]?.text || '');
+  if (opts.mock) { const ml = all.filter((l) => l.y < H * 0.2).find((l) => MOCK.test(l.text)); head = ml ? ml.text.replace(/\s*·\s*/, ' · ') : ''; }
   const hs = items.map((i) => i.h).filter(Boolean).sort((a, b) => a - b);
   const med = hs[Math.floor(hs.length / 2)] || 10;
   const nos = [];
@@ -61,13 +66,16 @@ export function readProblemPage({ W, H, items }) {
 }
 
 // 문제 PDF 전체 → 구역 목록
-export async function readOutline(pdf, onProgress) {
+// opts: { to: 마지막 문제 쪽(정답이 같은 파일 뒤에 붙은 교재), mock: 회별 모의고사 }
+export async function readOutline(pdf, onProgress, opts = {}) {
   const raw = []; let textPages = 0;
-  for (let p = 1; p <= pdf.numPages; p++) {
+  const last = Math.min(pdf.numPages, opts.to || pdf.numPages);
+  for (let p = 1; p <= last; p++) {
     const pt = await pageText(pdf, p);
     if (pt.items.length > 3) textPages++;
-    const r = readProblemPage(pt);
-    onProgress?.(p, pdf.numPages);
+    const r = readProblemPage(pt, opts);
+    onProgress?.(p, last);
+    if (opts.mock && !r.head) continue; // 표지·빈 쪽
     if (r.nos.length) raw.push({ p, ...r });
   }
   const sections = []; const where = {};
@@ -82,6 +90,7 @@ export async function readOutline(pdf, onProgress) {
     const z = sec.hits.find(([no]) => /^0\d/.test(no));
     for (const [no, p] of sec.hits) {
       if (z && no.length !== z[0].length) continue;
+      if (opts.mock && Number(no) > 30) continue; // 모의고사 한 회는 30문항 이하 (본문 속 숫자 제외)
       if (!sec.nos.includes(no)) sec.nos.push(no);
       if (!sec.pages.includes(p)) sec.pages.push(p);
       where[sec.key + '|' + normNo(no)] ??= p;
@@ -95,17 +104,20 @@ export async function readOutline(pdf, onProgress) {
 // 1) 빠른정답 표  2) 그래도 빠진 번호는 상세 해설의 "01 정답 ④" 줄에서 보충
 // sol: 상세 해설에서 그 문항 해설이 차지하는 영역(다음 단·쪽으로 이어지면 여러 조각)
 // keys: 문제 PDF에서 읽은 구역 키 목록 (제목 줄을 알아보는 데 씀)
-export async function readAnswerBook(pdf, keys = []) {
+export async function readAnswerBook(pdf, keys = [], opts = {}) {
   const known = new Set(keys);
-  const headOf = (t) => { const m = t.match(HEAD); if (m) return normKey(m[0]); const k = normKey(cleanLabel(t)); if (known.has(k)) return k; if (/^\S+\/\S/.test(t) && !/\d\s*\/\s*\d/.test(t)) return k; return null; };
+  const headOf = (t) => { if (opts.mock) { const mm = t.match(/^(\d{1,2})\s*회\s*(·|정답)/); return mm ? mockKey(mm[1], known) : null; } const m = t.match(HEAD); if (m) return normKey(m[0]); const k = normKey(cleanLabel(t)); if (known.has(k)) return k; if (/^\S+\/\S/.test(t) && !/\d\s*\/\s*\d/.test(t)) return k; return null; };
   const quick = {}, detail = {}, sol = {};
   let secQ = null, secD = null, open = null;
   const close = () => { if (open && open.segs.length) sol[open.k] = open.segs; open = null; };
-  for (let p = 1; p <= pdf.numPages; p++) {
+  for (let p = opts.from || 1; p <= pdf.numPages; p++) {
     const pt = await pageText(pdf, p);
     const ls = lines(pt.items, pt.W, true);
     const isQuick = ls.some((l) => /빠른\s*정답/.test(l.text));
-    if (isQuick) {
+    if (opts.mock) { // 빠른정답 표는 칸이 흩어져 있어 건너뛰고, 쪽 위의 "1회 정답 및 해설"로 회를 정함
+      const top = lines(pt.items, pt.W, false).filter((l) => l.y < pt.H * 0.12).map((l) => l.text.match(/(\d{1,2})\s*회\s*정\s*답/)).find(Boolean);
+      const k = top && mockKey(top[1], known); if (k && k !== secD) { close(); secD = k; }
+    } else if (isQuick) {
       for (const l of ls) {
         if (/^(빠른\s*정답|정답과\s*해설)$/.test(l.text)) continue;
         const h = headOf(l.text); if (h) { secQ = h; continue; }
@@ -142,13 +154,36 @@ export async function readAnswerBook(pdf, keys = []) {
         close();
         if (!secD) return;
         const k = secD + '|' + normNo(mk.no);
-        if (mk.ans && !(k in detail)) detail[k] = mk.ans.replace(/\s*\/\s*/g, '/').trim();
+        let a = mk.ans.replace(/\s*\/\s*/g, '/').trim();
+        if (opts.mock && /변형$/.test(a)) a = a.replace(/\s*(모의고사|20\d\d|\S*교과서).*$/, '').trim(); // "32π 2024양정중 기말·서술형6번 변형" → "32π"
+        if (a && !(k in detail)) detail[k] = a;
         open = { k, segs: [{ p, x0, x1, y0: mk.base + 2, y1: next - 2 }] };
       });
     }
   }
   close();
-  return { ans: { ...detail, ...quick }, sol };
+  return { ans: opts.mock ? { ...quick, ...detail } : { ...detail, ...quick }, sol };
+}
+// 해설지의 구역 이름이 문제 PDF와 앞부분만 다를 때 맞춤 (예: 해설 "고난도/3.1 대푯값과 산포도" ↔ 문제 "3.1 대푯값과 산포도")
+export function alignKeys(map, keys) {
+  const known = new Set(keys); const tail = (k) => k.replace(/^[^/]+\//, '');
+  const byTail = {}; keys.forEach((k) => { (byTail[tail(k)] ||= []).push(k); });
+  const out = {};
+  for (const [k, v] of Object.entries(map)) {
+    const i = k.lastIndexOf('|'); const sec = k.slice(0, i), no = k.slice(i);
+    let to = sec;
+    if (!known.has(sec)) { const c = byTail[tail(sec)]; if (c?.length === 1) to = c[0]; }
+    if (!(to + no in out)) out[to + no] = v;
+  }
+  return out;
+}
+// 정답·해설이 문제 뒤에 붙은 PDF: 위쪽에 "정답과 해설"이 처음 나오는 쪽 (없으면 0)
+export async function answerStart(pdf, from = 2) {
+  for (let p = from; p <= pdf.numPages; p++) {
+    const pt = await pageText(pdf, p);
+    if (lines(pt.items, pt.W, false).filter((l) => l.y < pt.H * 0.15).some((l) => /정\s*답\s*과\s*해\s*설|빠\s*른\s*정\s*답/.test(l.text))) return p;
+  }
+  return 0;
 }
 export async function readAnswers(pdf, keys = []) { return (await readAnswerBook(pdf, keys)).ans; }
 // "1 28 2 115 3 ①, ③ 4 58 / 5" → [[1,'28'],[2,'115'],[3,'①, ③'],[4,'58 / 5']]

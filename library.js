@@ -32,7 +32,8 @@ export function createLibrary(ctx) {
     st.scanning = true; render();
     try {
       const all = [];
-      for (const r of st.roots.filter((x) => st.perms[x.id] === 'granted')) {
+      // 세트용 폴더(교재 라이브러리의 "폴더로 세트 만들기")는 여기서 읽지 않음
+      for (const r of st.roots.filter((x) => st.perms[x.id] === 'granted' && x.mode !== 'sets')) {
         st.status = `${r.label} 읽는 중…`; render();
         all.push(...(await F.scan(r, (n) => { st.status = `${r.label} 읽는 중… ${n}개`; renderStatus(); })));
       }
@@ -74,7 +75,7 @@ export function createLibrary(ctx) {
       <div class="row between"><h2>교재 정리</h2><div class="row"><button class="ghost" data-l="addRoot">+ 폴더 연결</button><button class="primary" data-l="scan" ${st.scanning ? 'disabled' : ''}>${st.scanning ? '읽는 중…' : '폴더 다시 읽기'}</button></div></div>
       ${prompt ? `<div class="card" style="background:var(--gold-bg)"><div class="row between"><span>크롬을 다시 켜서 MYBOX 폴더 허락이 필요합니다.</span><button class="primary" data-l="reconnect">MYBOX 다시 연결</button></div></div>` : ''}
       <div class="card"><h3>연결된 폴더 ${st.roots.length}곳</h3>
-        ${st.roots.length ? st.roots.map((r) => `<div class="row between" style="border-top:1px solid var(--line);padding:6px 0;margin-top:6px"><div><strong>${esc(r.label)}</strong> <span class="badge">${esc(r.category)}</span><div class="muted small">${esc(r.path)} · ${r.fileCount || 0}개 · ${r.lastScan ? new Date(r.lastScan).toLocaleString('ko-KR') : '아직 안 읽음'}</div></div>
+        ${st.roots.length ? st.roots.map((r) => `<div class="row between" style="border-top:1px solid var(--line);padding:6px 0;margin-top:6px"><div><strong>${esc(r.label)}</strong> <span class="badge">${esc(r.category)}</span>${r.mode === 'sets' ? ' <span class="badge gold">교재 세트용 · 라이브러리에서 읽음</span>' : ''}<div class="muted small">${esc(r.path)} · ${r.fileCount || 0}개 · ${r.lastScan ? new Date(r.lastScan).toLocaleString('ko-KR') : '아직 안 읽음'}</div></div>
           <div class="row"><span class="badge ${st.perms[r.id] === 'granted' ? '' : 'red'}">${st.perms[r.id] === 'granted' ? '연결됨' : '허락 필요'}</span><button class="ghost small danger" data-l="rmRoot" data-id="${r.id}">빼기</button></div></div>`).join('')
         : `<p class="muted small">아래 버튼으로 N: 드라이브의 교재 폴더를 하나씩 연결하세요. 추천 폴더: ${F.DEFAULT_ROOTS.map((d) => esc(d.label)).join(', ')}</p>`}
         <p class="muted small" id="libStatus">${esc(st.status)}</p></div>
@@ -141,7 +142,7 @@ export function createLibrary(ctx) {
   // 우선순위: 0 중2-2 내신대비 → 1 중2-2 기타 → 2 다른 중등 → 3 나머지
   const prioOf = (b) => (b.grade.startsWith('중2-2') ? (b.kind === '내신대비' ? 0 : 1) : b.grade.startsWith('중') ? 2 : 3);
   async function queueToc() {
-    const todo = st.books.filter((b) => !unitsOf(b) && !b.zipped && b.files.some((f) => f.ext === 'pdf' && f.role === '본책') && !['교과서 자료', '한글/기타', '수업자료', '기출·시험지'].includes(b.kind));
+    const todo = st.books.filter((b) => !unitsOf(b) && !st.meta[bookId(b.key)]?.replacedBy && !b.zipped && b.files.some((f) => f.ext === 'pdf' && f.role === '본책') && !['교과서 자료', '한글/기타', '수업자료', '기출·시험지'].includes(b.kind));
     const want = new Set(todo.map((b) => 'toc_' + bookId(b.key)));
     let batch = fs.writeBatch(db), n = 0;
     const step = async () => { if (++n % 400 === 0) { await batch.commit(); batch = fs.writeBatch(db); } };
@@ -179,7 +180,7 @@ export function createLibrary(ctx) {
           const r = st.roots.find((rr) => rr.label === t.label);
           if (!r) { await fs.updateDoc(x.ref, { status: 'waiting-folder' }); continue; }
           // 크롬을 다시 켜서 폴더 허락이 풀렸으면, 대기 목록은 그대로 두고 멈춤 (아침에 "MYBOX 다시 연결"을 누르면 다음 밤에 이어서)
-          if ((await F.permission(r)) !== 'granted') return { stop: 'MYBOX 폴더 허락 필요 (교재 정리 탭의 "MYBOX 다시 연결"을 누르고 "방문할 때마다 허용"을 고르세요)' };
+          if ((await F.permission(r)) !== 'granted') return { stop: `${r.label} 폴더 허락 필요 (맨 위 노란 띠의 "폴더 다시 연결"을 누르고 "방문할 때마다 허용"을 고르세요)` };
           const file = await F.openFile(r, t.rel);
           return { id: x.id, ref: x.ref, title: t.title, task: t, run: t.task === 'toc' ? tocTask({ file, title: t.title }) : retypeTask({ file, title: t.title, cursor: t.cursor || 1 }) };
         }

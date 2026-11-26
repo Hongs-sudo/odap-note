@@ -14,9 +14,10 @@ import { printDoc } from './print/print.js';
 import { createWrong } from './wrong.js';
 import { localDay } from './analysis.js';
 import * as FOLD from './folders.js';
+import { createSetBuilder } from './sets.js';
 
 // 앱 버전: 고칠 때마다 올림. 연결 설정에서 지금 쓰는 버전과 서버의 최신 버전을 비교해 보여 줌
-const APP_VERSION = '2026.10.28-3';
+const APP_VERSION = '2026.11.26-1';
 // ---------- 공통 ----------
 const $ = (s) => document.querySelector(s);
 const main = $('#main');
@@ -155,10 +156,19 @@ function lib() {
 let WR = null;
 function wr() {
   WR ||= createWrong({
-    db, aid: () => S.aid, ai, toast, openModal, closeModal, uid: () => S.user.uid,
+    db, aid: () => S.aid, ai, toast, openModal, closeModal, uid: () => S.user.uid, sets: () => S.sets,
     fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, updateDoc, deleteDoc, increment, arrayUnion },
   });
   return WR;
+}
+let SB = null;
+function sb() {
+  SB ||= createSetBuilder({
+    db, aid: () => S.aid, uid: () => S.user.uid, toast, openModal, closeModal, students: () => S.students,
+    reloadCatalog: async () => { await wr().catalog(true); catalogReady = true; },
+    fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, updateDoc, deleteDoc, deleteField, serverTimestamp },
+  });
+  return SB;
 }
 function render() {
   if (S.view === 'books') renderBooks();
@@ -170,10 +180,12 @@ function render() {
 // ---------- 교재 라이브러리 ----------
 function renderBooks() {
   const loose = S.books.filter((b) => !S.sets.some((s) => s.id === b.setId));
+  if (!catalogReady && S.sets.some((s) => s.source === 'folder')) wr().catalog().then(() => { catalogReady = true; if (S.view === 'books' && !modal.open) render(); }).catch(() => {});
+  const sets = [...S.sets].sort((a, b) => (a.order ?? -1) - (b.order ?? -1));
   main.innerHTML = `
-    <div class="row between"><h2>교재 라이브러리</h2><button class="primary" data-a="newSet">+ 교재 세트</button></div>
-    ${S.sets.length ? '' : '<div class="empty">먼저 교재 세트를 만드세요.<br><span class="small">예) 중2-2 중간고사 대비</span></div>'}
-    ${S.sets.map(setCard).join('')}
+    <div class="row between"><h2>교재 라이브러리</h2><div class="row"><button class="ghost" data-a="folderSets">폴더로 세트 만들기</button><button class="primary" data-a="newSet">+ 교재 세트</button></div></div>
+    ${S.sets.length ? '' : '<div class="empty">먼저 교재 세트를 만드세요.<br><span class="small">예) 중2-2 중간고사 대비 · PC의 교재 폴더가 있으면 "폴더로 세트 만들기"</span></div>'}
+    ${sets.map((s) => (s.source === 'folder' ? folderSetCard(s) : setCard(s))).join('')}
     ${loose.length ? `<div class="card"><h3>세트 없는 교재</h3>${loose.map(bookBlock).join('')}</div>` : ''}`;
 }
 function setCard(s) {
@@ -182,6 +194,22 @@ function setCard(s) {
     <div class="row between"><div><h3>${esc(s.name)}</h3><span class="muted small">${esc(s.grade || '')} · 교재 ${books.length}권</span></div>
       <div class="row"><button class="ghost small" data-a="newBook" data-id="${s.id}">+ 교재</button><button class="ghost small" data-a="editSet" data-id="${s.id}">수정</button></div></div>
     ${books.map(bookBlock).join('') || '<p class="muted small">이 세트에 교재를 추가하세요. 단계별 교재를 순서대로 넣으면 됩니다.</p>'}
+  </div>`;
+}
+// 폴더로 만든 세트: 교재는 PC 폴더의 PDF를 그대로 연결 (교재 정보는 catalogBooks)
+function folderSetCard(s) {
+  const all = (s.groups || []).flatMap((g) => g.ids || []);
+  const B = (id) => wr().bookOf(id);
+  const ready = all.filter((id) => B(id)?.outline).length;
+  return `<div class="card">
+    <div class="row between"><div><h3>${esc(s.name)}</h3><span class="muted small">${esc(s.grade || '')} · 교재 ${all.length}권 · 폴더 연결: ${esc(s.root || '')} · 구역 읽음 ${ready}/${all.length}</span></div>
+      <div class="row"><button class="primary small" data-a="setAssign" data-id="${s.id}">학생에게 배정</button><button class="ghost small" data-a="folderSets">폴더 다시 읽기</button><button class="ghost small danger" data-a="setDel" data-id="${s.id}">세트 지우기</button></div></div>
+    ${(s.groups || []).map((g, gi) => `<div style="border-top:1px dashed var(--line);margin-top:10px;padding-top:8px">
+      ${g.name || g.quick ? `<div class="row between"><b class="small">${esc(g.name || '')}</b>${g.quick ? `<button class="ghost small" data-a="setPdf" data-id="${s.id}" data-g="${gi}" data-f="quick">빠른정답모음 PDF</button>` : ''}</div>` : ''}
+      ${(g.ids || []).map((id) => { const b = B(id); if (!b) return catalogReady ? `<div class="small muted">교재 정보 없음 (${esc(id)})</div>` : ''; const st = b.outline ? `구역 ${b.outline.sections.length}개 읽음` : b.units ? `단원 ${b.units}` : '처음 오답 입력 때 구역 읽음';
+        return `<div class="row between" style="border-top:1px solid var(--line);padding:6px 0;font-size:13px"><span><span class="badge gold">${esc(b.code || '')}</span> <b>${esc(b.title)}</b> ${b.sub ? `<span class="muted">${esc(b.sub)}</span>` : ''}</span>
+          <span class="row"><span class="badge">${b.count ? b.count + '문항' : '회별'}</span><span class="badge">${b.sameFile ? '정답·해설: PDF 뒤쪽' : (b.files || []).length > 2 ? `해설 ${(b.files || []).length - 1}개` : '정답·해설 ✓'}</span><span class="badge ${b.outline ? '' : 'gold'}">${st}</span>
+          <button class="ghost small" data-a="setPdf" data-key="${id}" data-f="0">문제</button>${b.sameFile ? '' : `<button class="ghost small" data-a="setPdf" data-key="${id}" data-f="1">해설</button>`}</span></div>`; }).join('')}</div>`).join('')}
   </div>`;
 }
 function bookBlock(b) {
@@ -466,7 +494,7 @@ async function permBanner() {
   const lastBad = last && last.day === localDay() && /허락/.test(last.stop || '');
   if (!need && !lastBad) return;
   const div = document.createElement('div'); div.id = 'permBanner'; div.className = 'card'; div.style.cssText = 'background:var(--gold-bg);max-width:860px;margin:12px auto 0';
-  div.innerHTML = `<div class="row between"><span class="small"><b>MYBOX 폴더 허락이 필요합니다.</b> ${lastBad ? '오늘 새벽 분석이 이 때문에 쉬었습니다. ' : ''}누른 뒤 크롬이 물으면 <b>"방문할 때마다 허용"</b>을 고르세요. 그래야 새벽에 다시 묻지 않습니다.</span><button class="primary small" id="permGo">MYBOX 다시 연결</button></div>`;
+  div.innerHTML = `<div class="row between"><span class="small"><b>교재 폴더 허락이 필요합니다.</b> ${lastBad ? '오늘 새벽 분석이 이 때문에 쉬었습니다. ' : ''}누른 뒤 크롬이 물으면 <b>"방문할 때마다 허용"</b>을 고르세요. 그래야 새벽에 다시 묻지 않습니다.</span><button class="primary small" id="permGo">폴더 다시 연결</button></div>`;
   main.before(div);
   document.getElementById('permGo').onclick = async () => { await reconnectFolders(); permBanner(); toast('폴더를 다시 연결했습니다'); };
 }
@@ -505,6 +533,10 @@ document.addEventListener('click', (e) => {
     delRec: () => { e.preventDefault(); delRecord(id, key); },
     recheck: renderSettings,
     sample: () => printSample(b.dataset.aud).catch((er) => toast(er.message)),
+    folderSets: () => sb().start().catch((er) => toast(er.message)),
+    setAssign: () => sb().assign(S.sets.find((x) => x.id === id), wr().bookOf),
+    setDel: () => sb().removeSet(S.sets.find((x) => x.id === id)),
+    setPdf: () => { const fi = b.dataset.f; if (fi === 'quick') { const g = S.sets.find((x) => x.id === id)?.groups?.[Number(b.dataset.g)]; if (g?.quick) sb().openPdfFile(g.quick); return; } const bk = wr().bookOf(key); const f = bk?.files?.[Number(fi)]; if (f) sb().openPdfFile(f); },
   }[a] || (() => {}))();
   if (a === 'upload' && modal.open) closeModal();
 });
