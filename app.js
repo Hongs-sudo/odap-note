@@ -18,7 +18,7 @@ import { createSetBuilder } from './sets.js';
 import { createSimilar } from './similar.js';
 
 // 앱 버전: 고칠 때마다 올림. 연결 설정에서 지금 쓰는 버전과 서버의 최신 버전을 비교해 보여 줌
-const APP_VERSION = '2026.11.26-8';
+const APP_VERSION = '2026.11.27-1';
 // ---------- 공통 ----------
 const $ = (s) => document.querySelector(s);
 const main = $('#main');
@@ -192,9 +192,9 @@ function listen() {
   // 선생님 계정은 본인 담당 학생만 불러옵니다 (보안 규칙과 맞춤)
   const sq = S.role === 'owner'
     ? query(col('students'), orderBy('name'))
-    : query(col('students'), where('teacherUid', '==', S.user.uid), orderBy('name'));
+    : query(col('students'), where('teacherUid', '==', S.user.uid)); // 선생님: 정렬은 화면에서 (조건+정렬을 함께 쓰면 Firestore 색인이 따로 필요해 목록이 안 나옴)
   S.unsub.push(onSnapshot(sq, (snap) => {
-    S.students = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    S.students = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ko'));
     if (!modal.open) render();
   }, (err) => toast(`불러오기 오류: ${err.message}`)));
 }
