@@ -276,7 +276,7 @@ export function createSetBuilder(ctx) {
     const w = window.open('', '_blank');
     try {
       const r = (await F.listRoots()).find((x) => x.label === f.label);
-      if (!r) throw new Error(`"${f.label}" 폴더가 이 PC에 연결되어 있지 않습니다.`);
+      if (!r) throw new Error(`"${f.label}" 폴더가 이 PC에 아직 연결되어 있지 않습니다. 연결 설정 → 교재 폴더에서 연결하세요.`);
       if ((await F.permission(r)) !== 'granted') await F.reconnectAll([r]);
       const url = URL.createObjectURL(await F.openFile(r, f.rel));
       if (w) w.location = url; else location.href = url;

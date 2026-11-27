@@ -71,7 +71,7 @@ export function createWrong(ctx) {
     if (!C.pdf[k]) {
       roots ||= await F.listRoots();
       const r = roots.find((x) => x.label === f.label);
-      if (!r) throw new Error(`"${f.label}" 폴더가 이 PC에 연결되어 있지 않습니다. 교재 정리 탭에서 연결하세요.`);
+      if (!r) throw Object.assign(new Error(`"${f.label}" 폴더가 이 PC에 아직 연결되어 있지 않습니다. 아래 버튼을 누르거나 연결 설정 → 교재 폴더에서 연결하세요.`), { folderLabel: f.label });
       if ((await F.permission(r)) !== 'granted') throw new Error(`"${f.label}" 폴더 허락이 필요합니다. 맨 위 노란 띠의 "폴더 다시 연결"을 누르세요.`);
       C.pdf[k] = openPdf(await F.openFile(r, f.rel));
     }
@@ -181,7 +181,11 @@ export function createWrong(ctx) {
           const roots = await ensureFolders(labelsOf(b));
           const o = await outlineOf(b, roots, (p, n) => { const g = document.getElementById('wGrid'); if (g && p % 5 === 0) g.innerHTML = `<p class="muted small">교재 구역을 읽는 중… ${p}/${n}쪽</p>`; });
           grid(b, o);
-        } catch (e) { document.getElementById('wGrid').innerHTML = `<p class="small" style="color:var(--red)">${esc(e.message)}</p>`; }
+        } catch (e) {
+          const g = document.getElementById('wGrid');
+          g.innerHTML = `<p class="small" style="color:var(--red)">${esc(e.message)}</p>${e.folderLabel && ctx.connectFolder ? `<div class="card small" style="background:var(--green-bg)">MYBOX(N:) › 공유받은 › 2026 중등부 › <b>${esc(e.folderLabel)}</b> 폴더를 한 번 눌러 고른 뒤 [폴더 선택] → 크롬이 물으면 [파일 보기]를 누르세요.<div class="row" style="margin-top:8px"><button class="primary small" id="wConn">이 폴더 연결</button></div></div>` : ''}`;
+          document.getElementById('wConn')?.addEventListener('click', async () => { if (await ctx.connectFolder(e.folderLabel)) draw(); });
+        }
       }
     };
 

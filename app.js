@@ -18,7 +18,7 @@ import { createSetBuilder } from './sets.js';
 import { createSimilar } from './similar.js';
 
 // 앱 버전: 고칠 때마다 올림. 연결 설정에서 지금 쓰는 버전과 서버의 최신 버전을 비교해 보여 줌
-const APP_VERSION = '2026.11.27-1';
+const APP_VERSION = '2026.11.27-2';
 // ---------- 공통 ----------
 const $ = (s) => document.querySelector(s);
 const main = $('#main');
@@ -214,6 +214,7 @@ let WR = null;
 function wr() {
   WR ||= createWrong({
     db, aid: () => S.aid, ai, toast, openModal, closeModal, uid: () => S.user.uid, sets: () => S.sets,
+    connectFolder: async (label) => { const ok = await connectFolder(label, (S.sets.find((x) => x.root === label) || {}).rootPath || ''); permBanner(); return ok; },
     fs: { doc, getDoc, setDoc, getDocs, collection, writeBatch, updateDoc, deleteDoc, increment, arrayUnion },
   });
   return WR;
