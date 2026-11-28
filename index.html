@@ -21,17 +21,20 @@
   <div class="brand"><img class="mark-logo" src="logo-symbol.svg" alt="수학도서관 로고"><div><strong>수학도서관 오답노트</strong><small id="academyName"></small></div></div>
   <div class="row"><button id="installBtn" class="ghost small" hidden>앱으로 설치</button><button id="logoutBtn" class="ghost small" hidden>로그아웃</button></div>
 </header>
-<nav id="tabs" class="tabs" hidden>
-  <button data-view="books" class="on">교재 라이브러리</button>
-  <button data-view="catalog">교재 정리</button>
-  <button data-view="students">학생</button>
-  <button data-view="similar">유사문항</button>
-  <button data-view="settings">연결 설정</button>
-</nav>
-<main id="main"><p class="muted center pad">불러오는 중…</p></main>
-<dialog id="modal"><div id="modalBody"></div></dialog>
+<!-- 2026-11-28: 오답노트는 수학도서관 앱으로 옮겼습니다. 입력은 새 앱에서만 합니다(기록이 두 곳으로 나뉘지 않게). 데이터(sudo-odap)는 지우지 않고 그대로 둡니다. -->
+<main id="main" style="display:flex;justify-content:center;padding:48px 16px">
+  <div class="card" style="max-width:560px;width:100%;text-align:center;padding:32px 24px">
+    <h2 style="margin:0 0 12px">오답노트가 '수학도서관' 앱으로 옮겨졌습니다</h2>
+    <p>11월 28일까지 이 앱에 넣은 학생 · 교재 · 오답 기록 · 오답노트는 모두 새 앱으로 옮겼습니다.<br>이제부터 오답 입력과 오답노트 · 유사문항은 <b>수학도서관 앱</b>에서 해 주세요.</p>
+    <p style="margin:20px 0"><a class="primary" href="https://hongs-sudo.github.io/mathlib/" style="display:inline-block;padding:12px 22px;border-radius:10px;text-decoration:none">수학도서관 앱 열기</a></p>
+    <p class="muted small">같은 Google 계정으로 로그인하면 됩니다. MYBOX 폴더 연결도 이 PC에 그대로 남아 있어, 새 앱에서 '다시 연결'만 한 번 누르면 됩니다.<br>설치한 '오답노트' 앱 대신 새 앱 화면에서 '앱으로 설치'를 눌러 주세요.</p>
+    <p class="muted small" id="goIn"></p>
+  </div>
+</main>
 <div id="toast" role="status" aria-live="polite"></div>
-<script type="module" src="app.js"></script>
+<script>
+(() => { let n = 10; const el = document.getElementById('goIn'); const t = setInterval(() => { el.textContent = n + '초 뒤 새 앱으로 이동합니다'; if (n-- <= 0) { clearInterval(t); location.href = 'https://hongs-sudo.github.io/mathlib/'; } }, 1000); })();
+</script>
 <script>
 // 앱 설치 (PC 크롬·엣지: 버튼 한 번 / 아이패드·아이폰: 공유 → 홈 화면에 추가)
 (() => {
